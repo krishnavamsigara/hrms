@@ -285,26 +285,16 @@ class AdminModel extends Model
     /**
      * Get payroll attendance summary data with employee details
      */
-    public function get_payroll_attendance_data(int $month, int $year): array
+    public function get_payroll_attendance_data(int $month, int $year, string $emp_id): array
     {
-        $sql = "
-            SELECT p.*, e.emp_name, 
-                   IFNULL(d.department_name, 'N/A') AS department, 
-                   IFNULL(dg.designation_name, 'N/A') AS designation 
-            FROM payroll_attendance_summary p
-            JOIN user_details e ON p.emp_id = e.emp_id
-            LEFT JOIN department_master d ON e.department = d.department_id
-            LEFT JOIN designation_master dg ON e.designation = dg.designation_id
-            WHERE p.payroll_month = ? AND p.payroll_year = ?
-            ORDER BY p.emp_id ASC
-        ";
-        return $this->db->query($sql, [$month, $year])->getResultArray();
+        $sql = "CALL get_payroll_attendance_data_proc(?, ?, ?)";
+        return $this->db->query($sql, [$emp_id, $month, $year])->getResultArray();
     }
     
-    public function finalize_payroll_attendance(int $month, int $year): bool
+    public function finalize_payroll_attendance(int $month, int $year, string $emp_id): bool
     {
-        $sql = "UPDATE payroll_attendance_summary SET is_finalized = 'Y' WHERE payroll_month = ? AND payroll_year = ?";
-        return $this->db->query($sql, [$month, $year]);
+        $sql = "CALL finalize_payroll_attendance_proc(?, ?, ?)";
+        return $this->db->query($sql, [$emp_id, $month, $year]);
     }
 
     public function get_attendance_overview(string $emp_id, string $startDate, string $endDate, string $searchParam): array

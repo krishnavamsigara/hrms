@@ -1194,8 +1194,9 @@ class AdminController extends BaseController
             return $this->response->setJSON(['status' => 'N', 'message' => 'Month and Year are required.']);
         }
 
+        $adminEmpId = $session->get('emp_id');
         $model = new AdminModel();
-        $success = $model->finalize_payroll_attendance($month, $year);
+        $success = $model->finalize_payroll_attendance($month, $year, $adminEmpId);
 
         if ($success) {
             return $this->response->setJSON(['status' => 'Y', 'message' => 'Attendance finalized successfully.']);
@@ -1217,8 +1218,9 @@ class AdminController extends BaseController
         $month = (int) $this->request->getPostGet('month') ?: (int) date('m');
         $year  = (int) $this->request->getPostGet('year')  ?: (int) date('Y');
 
+        $adminEmpId = $session->get('emp_id');
         $model = new AdminModel();
-        $records = $model->get_payroll_attendance_data($month, $year);
+        $records = $model->get_payroll_attendance_data($month, $year, $adminEmpId);
         $is_finalized = (!empty($records) && $records[0]['is_finalized'] == 'Y') ? true : false;
 
         $data = [
