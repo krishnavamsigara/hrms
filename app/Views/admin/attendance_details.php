@@ -32,16 +32,7 @@ $avgDailyHours = $monthlyWorkedDays > 0 ? round($monthlyTotalHours / $monthlyWor
 $totalDays = !empty($attendance) ? count($attendance) : 30;
 $attPct = $totalDays > 0 ? round(($monthlyWorkedDays / $totalDays) * 100) : 0;
 
-// Leave balances
-$plBalance = 12; $slBalance = 5; $clBalance = 3;
-if (!empty($leave_balances)) {
-    foreach ($leave_balances as $lb) {
-        $code = strtoupper(trim($lb['leave_code'] ?? ''));
-        if ($code == 'PL') $plBalance = (float)($lb['balance_days'] ?? 12);
-        if ($code == 'SL') $slBalance = (float)($lb['balance_days'] ?? 5);
-        if ($code == 'CL') $clBalance = (float)($lb['balance_days'] ?? 3);
-    }
-}
+// Leave balances are now handled dynamically in the HTML below
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -578,18 +569,16 @@ if (!empty($leave_balances)) {
                       <span class="stat-label">LEAVE BALANCE</span>
                     </div>
                     <div class="d-flex align-items-center justify-content-around text-center pt-2">
-                      <div>
-                        <div class="stat-label">PL</div>
-                        <div class="font-weight-bold text-dark" style="font-size:16px;"><?= $plBalance ?></div>
-                      </div>
-                      <div>
-                        <div class="stat-label">SL</div>
-                        <div class="font-weight-bold text-dark" style="font-size:16px;"><?= $slBalance ?></div>
-                      </div>
-                      <div>
-                        <div class="stat-label">CL</div>
-                        <div class="font-weight-bold text-dark" style="font-size:16px;"><?= $clBalance ?></div>
-                      </div>
+                      <?php if (!empty($leave_balances)) : ?>
+                        <?php foreach ($leave_balances as $lb) : ?>
+                          <div>
+                            <div class="stat-label" title="<?= esc($lb['leave_name'] ?? '') ?>"><?= esc(strtoupper($lb['leave_code'] ?? '')) ?></div>
+                            <div class="font-weight-bold text-dark" style="font-size:16px;"><?= (float)($lb['balance_days'] ?? 0) ?></div>
+                          </div>
+                        <?php endforeach; ?>
+                      <?php else : ?>
+                        <div class="text-muted" style="font-size:12px;">No leave balances found</div>
+                      <?php endif; ?>
                     </div>
                   </div>
                 </div>

@@ -1020,12 +1020,7 @@ class AdminController extends BaseController
 
         $data['attendance'] = $model->get_emp_Attendance($emp_id, $month, $year);
 
-        $data['leave_balances'] = $db->query("
-            SELECT b.*, t.leave_code, t.leave_name
-            FROM emp_leave_balance b
-            JOIN leave_type t ON b.leave_type_id = t.leave_type_id
-            WHERE b.emp_id = '$emp_id' AND b.year = $year
-        ")->getResultArray();
+        $data['leave_balances'] = $db->query("CALL get_emp_leave_balances(?, ?)", [$emp_id, $year])->getResultArray();
 
         $totalWorkMins = 0;
         $presentDays = 0;
