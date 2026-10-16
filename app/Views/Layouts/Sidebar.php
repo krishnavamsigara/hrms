@@ -9,6 +9,7 @@ $current = uri_string();
 
 
 $isSettingsActive = in_array($current, [
+    'admin/company_settings',
     'aut_pages/polices',
     'aut_pages/leave_policy',
     'aut_pages/company_policy',
@@ -37,6 +38,12 @@ $isOnBoardingActive = in_array($current, [
     'admin/add_Candidate',
     'admin/View_candidate'
 ]);
+
+$isPayrollActive = (
+    strpos($current, 'admin/payroll') === 0 ||
+    $current == 'admin/payroll_attendance' ||
+    $current == 'admin/pay_roll'
+);
 
 $isMailActive = (strpos($current, 'admin/mail') === 0);
 ?>
@@ -283,13 +290,6 @@ $isMailActive = (strpos($current, 'admin/mail') === 0);
                     </a>
                 </li>
                 <li class="nav-item">
-                    <a href="<?= base_url('admin/payroll_attendance') ?>" 
-                      class="nav-link <?= ($current == 'admin/payroll_attendance') ? 'active' : '' ?>">
-                        <i class="nav-icon fas fa-calculator"></i>
-                        <p>Payroll Attendance</p>
-                    </a>
-                </li>
-                <li class="nav-item">
                   <a href="<?= base_url('admin/leave_overview') ?>"
                       class="nav-link <?= (
                             $current == 'admin/leave_overview' ||
@@ -306,19 +306,6 @@ $isMailActive = (strpos($current, 'admin/mail') === 0);
                       class="nav-link <?= ($current == 'admin/leave_types') ? 'active' : '' ?>">
                     <i class="nav-icon fas fa-sliders-h"></i>
                     <p>Leave Types</p>
-                  </a>
-                </li>
-                <!-- <li class="nav-item">
-                  <a href="<?= base_url('admin/payroll_dashboard') ?>" class="nav-link <?= ($current == 'admin/payroll_dashboard') ? 'active' : '' ?>">
-                    <i class="nav-icon fas fa-money-check-alt"></i>
-                    <p>Payroll</p>
-                  </a>
-                </li> -->
-
-                 <li class="nav-item">
-                  <a href="<?= base_url('admin/payroll') ?>" class="nav-link <?= (strpos($current, 'admin/payroll') === 0 || $current == 'admin/pay_roll') ? 'active' : '' ?>">
-                    <i class="nav-icon fas fa-calculator"></i>
-                    <p>Payroll Processing</p>
                   </a>
                 </li>
 
@@ -343,6 +330,61 @@ $isMailActive = (strpos($current, 'admin/mail') === 0);
                  class="nav-link <?= ($current == 'admin/attendance_overview' || $current == 'admin/attendance_details') ? 'active' : '' ?>">
                     <i class="nav-icon fas fa-calendar-check"></i>
                     <p>Attendance Overview</p>
+                  </a>
+                </li>
+              </ul>
+            </li>
+
+            <!-- DEDICATED PAYROLL NAVIGATION -->
+            <li class="nav-item <?= $isPayrollActive ? 'menu-open' : '' ?>">
+              <a href="#" class="nav-link <?= $isPayrollActive ? 'active' : '' ?>" style="background: <?= $isPayrollActive ? 'linear-gradient(135deg, #1d4ed8, #2563eb)' : 'transparent' ?>;">
+                <i class="nav-icon fas fa-money-check-alt text-warning"></i>
+                <p>
+                  Payroll Module
+                  <i class="right fas fa-angle-right"></i>
+                </p>
+              </a>
+              <ul class="nav nav-treeview">
+                <li class="nav-item">
+                  <a href="<?= base_url('admin/payroll') ?>" class="nav-link <?= ($current == 'admin/payroll' || $current == 'admin/payroll/') ? 'active' : '' ?>">
+                    <i class="nav-icon fas fa-tachometer-alt"></i>
+                    <p>Dashboard</p>
+                  </a>
+                </li>
+                <li class="nav-item">
+                  <a href="<?= base_url('admin/payroll_attendance') ?>" class="nav-link <?= ($current == 'admin/payroll_attendance') ? 'active' : '' ?>">
+                    <i class="nav-icon fas fa-user-clock"></i>
+                    <p>Attendance Summary</p>
+                  </a>
+                </li>
+                <li class="nav-item">
+                  <a href="<?= base_url('admin/payroll/components') ?>" class="nav-link <?= ($current == 'admin/payroll/components') ? 'active' : '' ?>">
+                    <i class="nav-icon fas fa-cubes"></i>
+                    <p>Salary Components</p>
+                  </a>
+                </li>
+                <li class="nav-item">
+                  <a href="<?= base_url('admin/payroll/structures') ?>" class="nav-link <?= ($current == 'admin/payroll/structures') ? 'active' : '' ?>">
+                    <i class="nav-icon fas fa-id-card-alt"></i>
+                    <p>Salary Structures</p>
+                  </a>
+                </li>
+                <li class="nav-item">
+                  <a href="<?= base_url('admin/payroll/runs') ?>" class="nav-link <?= ($current == 'admin/payroll/runs' || strpos($current, 'admin/payroll/run') === 0 || strpos($current, 'admin/payroll/view') === 0) ? 'active' : '' ?>">
+                    <i class="nav-icon fas fa-cogs"></i>
+                    <p>Payroll Processing</p>
+                  </a>
+                </li>
+                <li class="nav-item">
+                  <a href="<?= base_url('admin/payroll/payslips') ?>" class="nav-link <?= ($current == 'admin/payroll/payslips' || strpos($current, 'admin/payroll/payslip') === 0) ? 'active' : '' ?>">
+                    <i class="nav-icon fas fa-file-invoice-dollar"></i>
+                    <p>Payslip Center</p>
+                  </a>
+                </li>
+                <li class="nav-item">
+                  <a href="<?= base_url('admin/payroll/reports') ?>" class="nav-link <?= ($current == 'admin/payroll/reports') ? 'active' : '' ?>">
+                    <i class="nav-icon fas fa-chart-line"></i>
+                    <p>Reports & Bank Export</p>
                   </a>
                 </li>
               </ul>
@@ -447,7 +489,13 @@ $isMailActive = (strpos($current, 'admin/mail') === 0);
               </p>
             </a>
               <ul class="nav nav-treeview">
-                  <li class="nav-item">
+                <li class="nav-item">
+                  <a href="<?= base_url('admin/company_settings') ?>" class="nav-link <?= ($current == 'admin/company_settings') ? 'active' : '' ?>">
+                    <i class="nav-icon fas fa-building"></i>
+                    <p>Company Settings</p>
+                  </a>
+                </li>
+                <li class="nav-item">
     <a href="<?= base_url('aut_pages/polices') ?>"
        class="nav-link <?= in_array($current, [
             'aut_pages/polices',

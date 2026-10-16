@@ -255,27 +255,46 @@ $routes->GET('admin/Month_leave_details', 'AdminController::month_leave');
 $routes->POST('admin/Month_leave_details', 'AdminController::month_leave');
 
 
-//SALARY AND PAYSLIP ROUTES
-$routes->GET('admin/pay_roll', 'SalaryController::pay_roll');
-$routes->POST('admin/pay_roll', 'SalaryController::pay_roll');
-
-// ADMIN PAYROLL ENGINE MODULE ROUTES
+// ====================================================
+// ADMIN PAYROLL MODULE ROUTES (CLEAN ARCHITECTURE)
+// ====================================================
 $routes->GET('admin/payroll', 'PayrollAdminController::index');
-$routes->POST('admin/payroll/create', 'PayrollAdminController::create_cycle');
-$routes->GET('admin/payroll/view/(:num)', 'PayrollAdminController::view_cycle/$1');
-$routes->POST('admin/payroll/import_attendance/(:num)', 'PayrollAdminController::import_attendance/$1');
-$routes->GET('admin/payroll/calculate/(:num)', 'PayrollAdminController::calculate_cycle/$1');
-$routes->POST('admin/payroll/add_adjustment', 'PayrollAdminController::add_adjustment');
-$routes->POST('admin/payroll/update_status', 'PayrollAdminController::update_status');
-$routes->GET('admin/payroll/employee_detail/(:num)/(:any)', 'PayrollAdminController::employee_detail/$1/$2');
+$routes->POST('admin/payroll/create_run', 'PayrollAdminController::create_run');
+$routes->GET('admin/payroll/runs', 'PayrollAdminController::runs');
+$routes->GET('admin/payroll/run/(:num)', 'PayrollAdminController::run_detail/$1');
+$routes->GET('admin/payroll/calculate_run/(:num)', 'PayrollAdminController::calculate_run/$1');
+$routes->POST('admin/payroll/calculate_run/(:num)', 'PayrollAdminController::calculate_run/$1');
+$routes->POST('admin/payroll/calculate_employee/(:num)/(:any)', 'PayrollAdminController::calculate_employee/$1/$2');
+$routes->GET('admin/payroll/validate_run/(:num)', 'PayrollAdminController::validate_run/$1');
+$routes->POST('admin/payroll/approve_run/(:num)', 'PayrollAdminController::approve_run/$1');
+$routes->POST('admin/payroll/finalize_run/(:num)', 'PayrollAdminController::finalize_run/$1');
+$routes->POST('admin/payroll/reopen_run/(:num)', 'PayrollAdminController::reopen_run/$1');
+$routes->POST('admin/payroll/get_employee_run_components_ajax', 'PayrollAdminController::get_employee_run_components_ajax');
+
+// Salary Components Master
 $routes->match(['get', 'post'], 'admin/payroll/components', 'PayrollAdminController::components');
 $routes->POST('admin/payroll/save_component', 'PayrollAdminController::save_component');
 $routes->GET('admin/payroll/delete_component/(:num)', 'PayrollAdminController::delete_component/$1');
 $routes->GET('admin/payroll/toggle_component/(:num)', 'PayrollAdminController::toggle_component/$1');
+
+// Employee Salary Structures
 $routes->GET('admin/payroll/structures', 'PayrollAdminController::structures');
-$routes->GET('admin/payroll/get_emp_structure/(:any)', 'PayrollAdminController::get_emp_structure/$1');
+$routes->GET('admin/payroll/get_structure/(:any)', 'PayrollAdminController::get_structure/$1');
 $routes->POST('admin/payroll/save_structure', 'PayrollAdminController::save_structure');
-$routes->POST('admin/payroll/save_employee_draft', 'PayrollAdminController::save_employee_draft');
+
+// Payslips Center
+$routes->GET('admin/payroll/payslips', 'PayrollAdminController::payslips');
+$routes->GET('admin/payroll/payslip/(:num)/(:any)', 'PayrollAdminController::view_payslip/$1/$2');
+
+// Reports & Bank Export
+$routes->GET('admin/payroll/reports', 'PayrollAdminController::reports');
+$routes->GET('admin/payroll/export_bank_csv/(:num)', 'PayrollAdminController::export_bank_csv/$1');
+$routes->GET('admin/payroll/export_register_csv/(:num)', 'PayrollAdminController::export_register_csv/$1');
+
+// Compatibility aliases
+$routes->GET('admin/payroll/view/(:num)', 'PayrollAdminController::run_detail/$1');
+$routes->GET('admin/pay_roll', 'PayrollAdminController::index');
+$routes->POST('admin/pay_roll', 'PayrollAdminController::index');
 
 
 $routes->GET('employee/new_emp_payslip/(:any)/(:any)/(:any)', 'SalaryController::emp_payslip/$1/$2/$3');
@@ -294,3 +313,8 @@ $routes->POST('employee/salaryinvoice', 'SalaryController::Sal_invoice');
 //SWITCH ROLES
 $routes->GET('switchrole/HR', 'Home::switchRoleHR');
 $routes->GET('switchrole/ADMIN', 'Home::switchRoleADMIN');
+
+// COMPANY SETTINGS & PAYROLL CONFIGURATION
+$routes->GET('admin/company_settings', 'CompanySettingsController::index');
+$routes->POST('admin/company_settings/update', 'CompanySettingsController::update');
+$routes->GET('api/company_settings', 'CompanySettingsController::get_json');

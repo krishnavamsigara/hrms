@@ -496,12 +496,33 @@ $calculatedNetPay = max(0, $totalEarningsSum - $totalDeductionsSum);
     </style>
     <div class="content-wrapper" style="padding: 20px 0;">
 
-        <div class="d-flex justify-content-start mb-3" style="margin-left:25px;">
+        <div class="d-flex justify-content-between align-items-center mb-3" style="margin-left:25px; margin-right:25px;">
             <button type="button"
                 class="btn btn-bloom-back"
                 onclick="window.history.back();">
                 <i class="fas fa-arrow-left mr-1"></i> Back
             </button>
+
+            <!-- Dual-Version Architecture Switcher & Sync Indicator -->
+            <div class="btn-group shadow-sm" role="group" aria-label="Payslip Version Toggle">
+                <?php
+                    $curEmpId = $cnt['emp_id'] ?? ($empid_param ?? '');
+                    $curMonth = $cnt['month'] ?? ($month_param ?? '');
+                    $curYear  = $cnt['year'] ?? ($year_param ?? '');
+                    $activeVer = $active_version ?? 'v2';
+                ?>
+                <span class="btn btn-sm btn-light border disabled font-weight-bold text-muted d-none d-sm-inline-block">
+                    <i class="fas fa-sync-alt text-success mr-1"></i> Dual-Sync Mode:
+                </span>
+                <a href="<?= base_url("employee/new_emp_payslip/{$curEmpId}/{$curMonth}/{$curYear}?version=v2") ?>" 
+                   class="btn btn-sm <?= ($activeVer === 'v2') ? 'btn-primary font-weight-bold' : 'btn-outline-primary' ?>">
+                   <i class="fas fa-microchip mr-1"></i> New Engine (v2)
+                </a>
+                <a href="<?= base_url("employee/new_emp_payslip/{$curEmpId}/{$curMonth}/{$curYear}?version=v1") ?>" 
+                   class="btn btn-sm <?= ($activeVer === 'v1') ? 'btn-dark font-weight-bold' : 'btn-outline-dark' ?>">
+                   <i class="fas fa-history mr-1"></i> Legacy Table (v1)
+                </a>
+            </div>
         </div>
         
         <div class="payslip-wrapper">
@@ -509,18 +530,21 @@ $calculatedNetPay = max(0, $totalEarningsSum - $totalDeductionsSum);
          
             <!-- Watermark Graphics Layer Section -->
             <div class="watermark-layer">
-                <img id="watermarkImg" src="<?= base_url('public/dist/img/bloom.jpg') ?>" class="watermark-img"
+                <img id="watermarkImg" src="<?= base_url($company['watermark_url'] ?? 'public/dist/img/bloom.jpg') ?>" class="watermark-img"
                     alt="Watermark">
             </div>
 
             <!-- Corporate Header Section -->
             <div class="office-header-container">
-                <img id="headerLogoImg" src="<?= base_url('public/dist/img/bloom.jpg') ?>" alt="Company Logo"
+                <img id="headerLogoImg" src="<?= base_url($company['logo_url'] ?? 'public/dist/img/bloom.jpg') ?>" alt="Company Logo"
                     class="office-logo-img">
-                <h1 class="office-brand-title"><span class="brand-blue">Bloom</span> <span
-                        class="brand-red">Solutions</span></h1>
-                <p class="office-header-sub">H No. 6-2-981, Flat No. 501, 5th Floor, Maruthi Plaza, Khairatabad -
-                    500004, Hyderabad, Telangana.</p>
+                <h1 class="office-brand-title">
+                    <span class="brand-blue"><?= esc($company['brand_title_primary'] ?? 'Bloom') ?></span> 
+                    <span class="brand-red"><?= esc($company['brand_title_secondary'] ?? 'Solutions') ?></span>
+                </h1>
+                <p class="office-header-sub">
+                    <?= esc($company['company_address'] ?? 'H No. 6-2-981, Flat No. 501, 5th Floor, Maruthi Plaza, Khairatabad - 500004, Hyderabad, Telangana.') ?>
+                </p>
                 <b class="office-document-title">
                     Payslip for the month of <?= esc($month) ?> - <?= esc($year) ?>
                 </b>
@@ -621,9 +645,21 @@ $calculatedNetPay = max(0, $totalEarningsSum - $totalDeductionsSum);
                                 ₹<?= number_format_indian($item['monthly_ctc'] ?? 0); ?>/-
                             </td>
 
-                            <td class="field-label">Leaves without pay</td>
+                            <td class="field-label">Leaves without pay (LOP)</td>
                             <td class="field-value">
-                                <?= esc($item['no_days_absent'] ?? 0); ?>
+                                <?= esc($item['no_days_absent'] ?? $item['lop_days'] ?? 0); ?> Days
+                            </td>
+                        </tr>
+
+                        <tr>
+                            <td class="field-label">Total Days in Month</td>
+                            <td class="field-value">
+                                <?= esc($item['total_working_days'] ?? $item['working_days'] ?? 30); ?> Days
+                            </td>
+
+                            <td class="field-label">Paid / Present Days</td>
+                            <td class="field-value" style="color: #16a34a; font-weight:700;">
+                                <?= esc($item['no_days_present'] ?? $item['present_days'] ?? 30); ?> Days
                             </td>
                         </tr>
                     <?php endforeach; ?>
@@ -753,8 +789,7 @@ $calculatedNetPay = max(0, $totalEarningsSum - $totalDeductionsSum);
             </table>
 
             <div class="disclaimer-text">
-                <i class="fa-solid fa-circle-check text-success mr-1"></i> This is a computer-generated statement, and
-                does not require a signature and stamp.
+                <i class="fa-solid fa-circle-check text-success mr-1"></i> <?= esc($company['payslip_footer_disclaimer'] ?? 'This is a computer-generated statement, and does not require a signature and stamp.') ?>
             </div>
 
             <div id="pdfControls" class="print-trigger-bar">
@@ -771,7 +806,7 @@ $calculatedNetPay = max(0, $totalEarningsSum - $totalDeductionsSum);
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
     <script>
-        const localImageSrc = "<?= base_url('public/dist/img/bloom.jpg') ?>";
+        const localImageSrc = "<?= base_url($company['logo_url'] ?? 'public/dist/img/bloom.jpg') ?>";
 
         function loadAssetsSecurely() {
             const img = new Image();

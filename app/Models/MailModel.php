@@ -191,5 +191,41 @@ class MailModel extends Model
             return $builder->insert($data);
         }
     }
+
+    public function callProcedure($procedureName, $params = [])
+    {
+        $conn = $this->db->connID;
+        while (@mysqli_more_results($conn) && @mysqli_next_result($conn)) {
+            $dummy = @mysqli_use_result($conn);
+            if ($dummy instanceof \mysqli_result) {
+                mysqli_free_result($dummy);
+            }
+        }
+
+        $placeholders = implode(',', array_fill(0, count($params), '?'));
+        $sql = "CALL {$procedureName}({$placeholders})";
+        $query = $this->db->query($sql, $params);
+        $result = $query->getResultArray();
+
+        while (@mysqli_more_results($conn) && @mysqli_next_result($conn)) {
+            $dummy = @mysqli_use_result($conn);
+            if ($dummy instanceof \mysqli_result) {
+                mysqli_free_result($dummy);
+            }
+        }
+
+        return $result;
+    }
+
+    public function getCandidatesForMail()
+    {
+        return $this->callProcedure('sp_get_mail_recipients_candidates');
+    }
+
+    public function getEmployeesForMail()
+    {
+        return $this->callProcedure('sp_get_mail_recipients_employees');
+    }
 }
+
 

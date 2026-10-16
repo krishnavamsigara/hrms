@@ -18,17 +18,8 @@ class SalaryController extends BaseController
 
         $empid = $session->get('emp_id');
 
-        // Check if new payroll cycles exist
-        $db = \Config\Database::connect();
-        $latest_salary = $db->table('salaries s')
-            ->select('s.*, pc.payroll_code, pc.period_start, pc.period_end')
-            ->join('payroll_cycles pc', 'pc.id = s.payroll_cycle_id', 'left')
-            ->where('s.emp_id', $empid)
-            ->orderBy('s.id', 'DESC')
-            ->get()->getRowArray();
-
         $data['salary']        = $model->get_view_salary();
-        $data['latest_salary'] = $latest_salary;
+        $data['latest_salary'] = $model->get_latest_salary($empid);
 
         return view('Layouts/Header')
             . view('Layouts/Sidebar')
@@ -45,6 +36,8 @@ class SalaryController extends BaseController
             }
             $model = new SalaryModel();
             $payrollModel = new PayrollModel();
+            $settingsModel = new \App\Models\CompanySettingsModel();
+            $data['company'] = $settingsModel->get_settings();
 
             if ($empid == '') {
                 $empid = $session->get('emp_id');
@@ -58,39 +51,39 @@ class SalaryController extends BaseController
                 $year = date('Y');
             }
 
-            // Attempt to get frozen payslip from new Payroll Processing Engine
-            $frozen = $payrollModel->get_employee_frozen_payslip($empid, $month, $year);
+            // Version selector: ?version=v1 (Legacy Table/Procedure) or ?version=v2 (New Engine) or default auto
+            $requested_version = $this->request->getGet('version'); // 'v1' or 'v2'
+            $active_version = 'v2';
 
-            if ($frozen && !empty($frozen['header'])) {
-                $hdr = $frozen['header'];
-                $data['content'] = [[
-                    'month'            => $month,
-                    'year'             => $year,
-                    'emp_id'           => $hdr['emp_id'],
-                    'emp_name'         => $hdr['emp_name'] ?? '',
-                    'department'       => $hdr['department'] ?? '',
-                    'designation'      => $hdr['designation'] ?? '',
-                    'pan_no'           => $hdr['pan_no'] ?? '',
-                    'bank_account_no'  => $hdr['bank_account_no'] ?? '',
-                    'ifsc_code'        => $hdr['ifsc_code'] ?? '',
-                    'ctc'              => $hdr['gross_amount'],
-                    'total_deductions' => $hdr['total_deductions'],
-                    'net_salary'       => $hdr['net_amount'],
-                    'working_days'     => $hdr['paid_days'] + $hdr['lop_days'],
-                    'present_days'     => $hdr['paid_days'],
-                    'lop_days'         => $hdr['lop_days'],
-                    'payroll_code'     => $hdr['payroll_code'] ?? '',
-                    'period_start'     => $hdr['period_start'] ?? '',
-                    'period_end'       => $hdr['period_end'] ?? '',
-                ]];
-                $data['earnings']   = $frozen['earnings'];
-                $data['deductions'] = $frozen['deductions'];
-            } else {
-                // Fallback to legacy procedure caller
+            if ($requested_version === 'v1') {
+                // Explicit legacy procedure fetch
                 $data['content']    = $model->get_emp_payslip($empid, $month, $year);
                 $data['earnings']   = $model->get_emp_allowance($empid, $month, $year);
                 $data['deductions'] = $model->get_emp_deductions($empid, $month, $year);
+                $active_version     = 'v1';
+            } else {
+                // Try New Engine frozen payslip first
+                $frozen = $payrollModel->get_employee_frozen_payslip($empid, $month, $year);
+
+                if ($frozen && !empty($frozen['content'])) {
+                    $data['content']    = $frozen['content'];
+                    $data['earnings']   = $frozen['earnings'];
+                    $data['deductions'] = $frozen['deductions'];
+                    $active_version     = 'v2';
+                } else {
+                    // Fallback to legacy procedure
+                    $data['content']    = $model->get_emp_payslip($empid, $month, $year);
+                    $data['earnings']   = $model->get_emp_allowance($empid, $month, $year);
+                    $data['deductions'] = $model->get_emp_deductions($empid, $month, $year);
+                    $active_version     = 'v1';
+                }
             }
+
+            $data['active_version']    = $active_version;
+            $data['requested_version'] = $requested_version;
+            $data['empid_param']       = $empid;
+            $data['month_param']       = $month;
+            $data['year_param']        = $year;
 
             // Check DB response for error status
             if (isset($data['content'][0]['status']) && $data['content'][0]['status'] == 'N') {

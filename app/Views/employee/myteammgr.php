@@ -37,17 +37,19 @@ $selectedYear  = $selectedYear ?? $defaultYear;
  * September 2026:
  * 25 Aug 2026 -> 24 Sep 2026
  */
-$periodEnd = new DateTime(
-    $selectedYear . '-' . $selectedMonth . '-24'
-);
+$cSettings = (new \App\Models\CompanySettingsModel())->getSettings();
+$cStartDay = (int)($cSettings['payroll_cycle_start_day'] ?? 25);
+$cEndDay   = (int)($cSettings['payroll_cycle_end_day'] ?? 24);
 
-$periodStart = clone $periodEnd;
-$periodStart->modify('-1 month');
-$periodStart->setDate(
-    (int)$periodStart->format('Y'),
-    (int)$periodStart->format('m'),
-    25
-);
+if ($cStartDay > $cEndDay) {
+    $prevM = ($selectedMonth == 1) ? 12 : ($selectedMonth - 1);
+    $prevY = ($selectedMonth == 1) ? ($selectedYear - 1) : $selectedYear;
+    $periodStart = new DateTime(sprintf('%04d-%02d-%02d', $prevY, $prevM, $cStartDay));
+    $periodEnd   = new DateTime(sprintf('%04d-%02d-%02d', $selectedYear, $selectedMonth, $cEndDay));
+} else {
+    $periodStart = new DateTime(sprintf('%04d-%02d-%02d', $selectedYear, $selectedMonth, $cStartDay));
+    $periodEnd   = new DateTime(sprintf('%04d-%02d-%02d', $selectedYear, $selectedMonth, $cEndDay));
+}
 
 $summary = $summary ?? [];
 ?>
@@ -1515,23 +1517,15 @@ $selectedYear  = (int) $selectedYear;
  * October = 25 Sep - 24 Oct
  */
 
-$periodStart = new DateTime(
-    sprintf(
-        '%04d-%02d-25',
-        $selectedYear,
-        $selectedMonth
-    )
-);
-
-$periodStart->modify('-1 month');
-
-$periodEnd = new DateTime(
-    sprintf(
-        '%04d-%02d-24',
-        $selectedYear,
-        $selectedMonth
-    )
-);
+if ($cStartDay > $cEndDay) {
+    $prevM = ($selectedMonth == 1) ? 12 : ($selectedMonth - 1);
+    $prevY = ($selectedMonth == 1) ? ($selectedYear - 1) : $selectedYear;
+    $periodStart = new DateTime(sprintf('%04d-%02d-%02d', $prevY, $prevM, $cStartDay));
+    $periodEnd   = new DateTime(sprintf('%04d-%02d-%02d', $selectedYear, $selectedMonth, $cEndDay));
+} else {
+    $periodStart = new DateTime(sprintf('%04d-%02d-%02d', $selectedYear, $selectedMonth, $cStartDay));
+    $periodEnd   = new DateTime(sprintf('%04d-%02d-%02d', $selectedYear, $selectedMonth, $cEndDay));
+}
 
 /*
  * Today

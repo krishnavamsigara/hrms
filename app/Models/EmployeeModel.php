@@ -25,12 +25,22 @@ class EmployeeModel extends Model
     ) {
         $placeholders = implode(',', array_fill(0, count($params), '?'));
 
-        $sql = "CALL {$procedureName}({$placeholders})";
+        $sql = !empty($params) ? "CALL {$procedureName}({$placeholders})" : "CALL {$procedureName}()";
 
         $query = $this->db->query($sql, $params);
 
+        if ($this->db->connID instanceof \mysqli) {
+            try {
+                while (@mysqli_more_results($this->db->connID) && @mysqli_next_result($this->db->connID)) {
+                    // Drain extra result sets left by MySQL stored procedure CALL
+                }
+            } catch (\Throwable $ex) {
+                // Suppress PHP 8.1+ strict mysqli exception
+            }
+        }
+
         if ($isQuery) {
-            return $query->getResultArray();
+            return $query ? $query->getResultArray() : [];
         }
 
         return $this->db->affectedRows() > 0;
@@ -127,4 +137,15 @@ class EmployeeModel extends Model
         return $this->callProcedure('get_attendence_period_summary_details', [$empid,$month, $year]);
     }
 
+    public function get_emp_leave_balances(string $empid, int $year): array
+    {
+        return $this->callProcedure('get_emp_leave_balances', [$empid, $year]);
+    }
+
+    public function get_user_details(string $empid): array
+    {
+        $res = $this->callProcedure('get_user_details', [$empid]);
+        return (!empty($res) && isset($res[0])) ? $res[0] : ($res ?: []);
+    }
 }
+

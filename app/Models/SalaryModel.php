@@ -77,4 +77,11 @@ class SalaryModel extends Model
         return $this->callProcedure('view_all_salary', []);
     }
 
+    public function get_latest_salary(string $empid)
+    {
+        $res = $this->callProcedure('sp_get_latest_salary', [$empid]);
+        return (!empty($res) && isset($res[0])) ? $res[0] : null;
+    }
+
 }
+

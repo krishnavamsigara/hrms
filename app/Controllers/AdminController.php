@@ -903,8 +903,8 @@ class AdminController extends BaseController
 
         $data['missing_punchouts'] = $model->get_missing_punchouts($month ?: null, $year ?: null, $emp_id, $exact_date);
 
-        $db = \Config\Database::connect();
-        $data['employees'] = $db->query("CALL GetActiveUsersForDropdown()")->getResultArray();
+        $adminModel = new AdminModel();
+        $data['employees'] = $adminModel->get_active_users_dropdown();
 
         return view('Layouts/Header')
             . view('Layouts/Sidebar')
@@ -947,20 +947,38 @@ class AdminController extends BaseController
             return redirect()->to(base_url('/'));
         }
 
-        $month  = $this->request->getVar('month') ?: date('n');
-        $year   = $this->request->getVar('year') ?: date('Y');
+        $rawMonth = trim((string)($this->request->getVar('month') ?? ''));
+        if (!is_numeric($rawMonth) && !empty($rawMonth)) {
+            $parsed = strtotime("1 " . $rawMonth . " " . date('Y'));
+            $month = ($parsed !== false) ? (int)date('n', $parsed) : (int)$rawMonth;
+        } else {
+            $month = (int)$rawMonth ?: (int)date('n');
+        }
+        if ($month < 1 || $month > 12) {
+            $month = (int)date('n');
+        }
+
+        $year   = (int)($this->request->getVar('year') ?: date('Y'));
         $search = $this->request->getVar('search') ?: '';
 
         $data['selectedMonth'] = (int)$month;
         $data['selectedYear']  = (int)$year;
         $data['search']        = $search;
 
-        if ($month == 1) {
-            $startDate = ($year - 1) . '-12-25';
+        $settingsModel   = new \App\Models\CompanySettingsModel();
+        $companySettings = $settingsModel->getSettings();
+        $cycleStartDay   = (int)($companySettings['payroll_cycle_start_day'] ?? 25);
+        $cycleEndDay     = (int)($companySettings['payroll_cycle_end_day'] ?? 24);
+
+        if ($cycleStartDay > $cycleEndDay) {
+            $prevM = ($month == 1) ? 12 : ($month - 1);
+            $prevY = ($month == 1) ? ($year - 1) : $year;
+            $startDate = sprintf('%04d-%02d-%02d', $prevY, $prevM, $cycleStartDay);
+            $endDate   = sprintf('%04d-%02d-%02d', $year, $month, $cycleEndDay);
         } else {
-            $startDate = $year . '-' . str_pad($month - 1, 2, '0', STR_PAD_LEFT) . '-25';
+            $startDate = sprintf('%04d-%02d-%02d', $year, $month, $cycleStartDay);
+            $endDate   = sprintf('%04d-%02d-%02d', $year, $month, $cycleEndDay);
         }
-        $endDate = $year . '-' . str_pad($month, 2, '0', STR_PAD_LEFT) . '-24';
 
         $searchParam = $search ?: '';
         
@@ -976,6 +994,101 @@ class AdminController extends BaseController
         }
 
         $data['employees'] = $employees;
+
+        // 1. Current Selected Month Payroll Attendance Status
+        $currentPayrollSummary = $model->get_payroll_attendance_summary_stats($month, $year);
+
+        $data['payrollGenerated']      = !empty($currentPayrollSummary);
+        $data['isFinalized']           = !empty($currentPayrollSummary) && (($currentPayrollSummary['is_finalized'] ?? '') === 'Y');
+        $data['currentPayrollSummary'] = $currentPayrollSummary;
+        $data['cycleStartDate']        = $startDate;
+        $data['cycleEndDate']          = $endDate;
+
+        // 2. Raw punches and attendance metrics for selected period
+        $data['monthRawStats'] = $model->get_attendance_punch_stats($startDate, $endDate);
+
+        // 3. Annual 12-Month Matrix for $selectedYear
+        $startFilter = sprintf('%04d-12-%02d', $year - 1, $cycleStartDay);
+        $endFilter   = sprintf('%04d-12-%02d', $year, $cycleEndDay);
+
+        $annualRawRes = $model->get_annual_attendance_matrix($year, $cycleStartDay, $startFilter, $endFilter);
+
+        $rawByMonth = [];
+        foreach ($annualRawRes as $r) {
+            if ((int)$r['p_year'] === (int)$year) {
+                $rawByMonth[(int)$r['p_month']] = $r;
+            }
+        }
+
+        $annualPayrollRes = $model->get_annual_payroll_summary($year);
+
+        $payrollByMonth = [];
+        foreach ($annualPayrollRes as $r) {
+            $payrollByMonth[(int)$r['payroll_month']] = $r;
+        }
+
+        $yearSummary = [];
+        $totalMonthsAvailable = 0;
+        $totalMonthsPartial   = 0;
+        $totalMonthsNoData    = 0;
+        $totalFinalized       = 0;
+        $totalDraft           = 0;
+
+        for ($mNum = 1; $mNum <= 12; $mNum++) {
+            $raw = $rawByMonth[$mNum] ?? null;
+            $rawCount = $raw ? (int)$raw['raw_count'] : 0;
+            $empCount = $raw ? (int)$raw['emp_count'] : 0;
+
+            if ($rawCount >= 2500) {
+                $rawStatus = 'full';
+                $totalMonthsAvailable++;
+            } elseif ($rawCount > 0) {
+                $rawStatus = 'partial';
+                $totalMonthsPartial++;
+            } else {
+                $rawStatus = 'none';
+                $totalMonthsNoData++;
+            }
+
+            $pInfo = $payrollByMonth[$mNum] ?? null;
+            $pStatus = 'not_generated';
+            if ($pInfo) {
+                if ($pInfo['is_finalized'] === 'Y') {
+                    $pStatus = 'finalized';
+                    $totalFinalized++;
+                } else {
+                    $pStatus = 'draft';
+                    $totalDraft++;
+                }
+            }
+
+            $mPrevM = ($mNum == 1) ? 12 : ($mNum - 1);
+            $mPrevY = ($mNum == 1) ? ($year - 1) : $year;
+            $mStart = sprintf('%04d-%02d-%02d', $mPrevY, $mPrevM, $cycleStartDay);
+            $mEnd   = sprintf('%04d-%02d-%02d', $year, $mNum, $cycleEndDay);
+
+            $yearSummary[$mNum] = [
+                'month'          => $mNum,
+                'name'           => date('M', mktime(0, 0, 0, $mNum, 10, $year)),
+                'full_name'      => date('F', mktime(0, 0, 0, $mNum, 10, $year)),
+                'start_date'     => $mStart,
+                'end_date'       => $mEnd,
+                'raw_count'      => $rawCount,
+                'emp_count'      => $empCount,
+                'raw_status'     => $rawStatus,
+                'payroll_status' => $pStatus,
+                'is_current'     => ($mNum === (int)$month)
+            ];
+        }
+
+        $data['yearMatrix'] = $yearSummary;
+        $data['yearStats'] = [
+            'available_months' => $totalMonthsAvailable,
+            'partial_months'   => $totalMonthsPartial,
+            'no_data_months'   => $totalMonthsNoData,
+            'finalized_months' => $totalFinalized,
+            'draft_months'     => $totalDraft
+        ];
 
         return view('Layouts/Header')
             . view('Layouts/Sidebar')
@@ -998,19 +1111,15 @@ class AdminController extends BaseController
         $data['selectedMonth'] = (int)$month;
         $data['selectedYear']  = (int)$year;
 
-        $db = \Config\Database::connect();
         $model = new EmployeeModel();
+        $adminModel = new AdminModel();
 
-        $userRow = $db->query("
-            SELECT u.*, m.emp_name as manager_name, d.department_name, des.designation_name
-            FROM user_details u
-            LEFT JOIN user_details m ON u.reporting = m.emp_id
-            LEFT JOIN department_master d ON u.department = d.department_id
-            LEFT JOIN designation_master des ON u.designation = des.designation_id
-            WHERE u.emp_id = '$emp_id'
-        ")->getRowArray();
+        $userRow = $model->get_user_details($emp_id);
+        if (!empty($userRow)) {
+            $userRow['manager_name'] = !empty($userRow['reporting']) ? $userRow['reporting'] : ($userRow['manager_name'] ?? 'Manager');
+        }
 
-        $data['employee'] = $userRow ?? [
+        $data['employee'] = !empty($userRow) ? $userRow : [
             'emp_id' => $emp_id,
             'emp_name' => 'Employee ' . $emp_id,
             'designation_name' => 'Team Member',
@@ -1020,7 +1129,7 @@ class AdminController extends BaseController
 
         $data['attendance'] = $model->get_emp_Attendance($emp_id, $month, $year);
 
-        $data['leave_balances'] = $db->query("CALL get_emp_leave_balances(?, ?)", [$emp_id, $year])->getResultArray();
+        $data['leave_balances'] = $model->get_emp_leave_balances($emp_id, (int)$year);
 
         $totalWorkMins = 0;
         $presentDays = 0;
@@ -1052,10 +1161,7 @@ class AdminController extends BaseController
             'attendance_pct'=> $attendancePct
         ];
 
-        $data['employee_list'] = $db->table('user_details')
-            ->select('emp_id, emp_name')
-            ->get()
-            ->getResultArray();
+        $data['employee_list'] = $adminModel->get_active_users_dropdown();
 
         return view('Layouts/Header')
             . view('Layouts/Sidebar')
@@ -1152,25 +1258,61 @@ class AdminController extends BaseController
             return $this->response->setJSON(['status' => 'N', 'message' => 'Unauthorized']);
         }
         
-        if (strtoupper($session->get('user_category')) !== 'ADMIN') {
-            return $this->response->setJSON(['status' => 'N', 'message' => 'Only Admin can perform this action.']);
+        $cat = strtoupper((string)($session->get('active_role') ?? $session->get('user_category')));
+        if (!in_array($cat, ['ADMIN', 'HR', 'SUPERADMIN'])) {
+            return $this->response->setJSON(['status' => 'N', 'message' => 'Only Admin / HR can perform this action.']);
         }
 
         $adminEmpId = $session->get('emp_id');
-        $month      = (int) $this->request->getPost('month');
-        $year       = (int) $this->request->getPost('year');
+
+        $rawMonth = trim((string)($this->request->getPost('month') ?? ''));
+        if (!is_numeric($rawMonth) && !empty($rawMonth)) {
+            $parsed = strtotime("1 " . $rawMonth . " " . date('Y'));
+            $month = ($parsed !== false) ? (int)date('n', $parsed) : (int)$rawMonth;
+        } else {
+            $month = (int)$rawMonth;
+        }
+        $year = (int) $this->request->getPost('year');
 
         if (empty($month) || empty($year)) {
             return $this->response->setJSON(['status' => 'N', 'message' => 'Month and Year are required.']);
         }
 
-        $model  = new AdminModel();
+        $monthName = date('F', mktime(0, 0, 0, $month, 10, $year));
+
+        $model    = new AdminModel();
+        $existing = $model->get_payroll_attendance_summary_stats($month, $year);
+
+        if (!empty($existing) && ($existing['is_finalized'] ?? '') === 'Y') {
+            return $this->response->setJSON([
+                'status'       => 'FINALIZED',
+                'is_finalized' => true,
+                'message'      => "Attendance for {$monthName} {$year} is already finalized (Locked) and cannot be regenerated."
+            ]);
+        }
+
+        $wasExisting = !empty($existing);
+
         $result = $model->generate_payroll_attendance($month, $year, $adminEmpId);
 
-        return $this->response->setJSON([
-            'status'  => $result['status'],
-            'message' => $result['message']
-        ]);
+        if ($result['status'] === 'Y') {
+            $msg = $wasExisting
+                ? "Payroll attendance updated successfully! All employee columns recalculated from attendance punches."
+                : "Payroll attendance generated and saved successfully for {$monthName} {$year}!";
+            return $this->response->setJSON([
+                'status'       => 'Y',
+                'is_finalized' => false,
+                'action'       => $wasExisting ? 'updated' : 'generated',
+                'message'      => $msg
+            ]);
+        } else {
+            $isFinalizedErr = (stripos($result['message'], 'finalized') !== false);
+            return $this->response->setJSON([
+                'status'       => $isFinalizedErr ? 'FINALIZED' : 'N',
+                'is_finalized' => $isFinalizedErr,
+                'message'      => $result['message']
+            ]);
+        }
     }
 
     /**
@@ -1183,11 +1325,18 @@ class AdminController extends BaseController
             return $this->response->setJSON(['status' => 'N', 'message' => 'Unauthorized']);
         }
         
-        if (strtoupper($session->get('user_category')) !== 'ADMIN') {
-            return $this->response->setJSON(['status' => 'N', 'message' => 'Only Admin can perform this action.']);
+        $cat = strtoupper((string)($session->get('active_role') ?? $session->get('user_category')));
+        if (!in_array($cat, ['ADMIN', 'HR', 'SUPERADMIN'])) {
+            return $this->response->setJSON(['status' => 'N', 'message' => 'Only Admin / HR can perform this action.']);
         }
 
-        $month = (int) $this->request->getPost('month');
+        $rawMonth = trim((string)($this->request->getPost('month') ?? ''));
+        if (!is_numeric($rawMonth) && !empty($rawMonth)) {
+            $parsed = strtotime("1 " . $rawMonth . " " . date('Y'));
+            $month = ($parsed !== false) ? (int)date('n', $parsed) : (int)$rawMonth;
+        } else {
+            $month = (int)$rawMonth;
+        }
         $year  = (int) $this->request->getPost('year');
 
         if (empty($month) || empty($year)) {
@@ -1215,20 +1364,93 @@ class AdminController extends BaseController
             return redirect()->to(base_url('login'));
         }
 
-        $month = (int) $this->request->getPostGet('month') ?: (int) date('m');
-        $year  = (int) $this->request->getPostGet('year')  ?: (int) date('Y');
+        $rawMonth = trim((string)($this->request->getPostGet('month') ?? ''));
+        if (!is_numeric($rawMonth) && !empty($rawMonth)) {
+            $parsed = strtotime("1 " . $rawMonth . " " . date('Y'));
+            $month = ($parsed !== false) ? (int)date('n', $parsed) : (int)$rawMonth;
+        } else {
+            $month = (int)$rawMonth;
+        }
+        $year  = (int) $this->request->getPostGet('year');
+        if (!$month || $month < 1 || $month > 12) {
+            $month = 2; // Default to current or available month
+        }
+        if (!$year || $year < 2000) {
+            $year = 2026;
+        }
 
         $adminEmpId = $session->get('emp_id');
         $model = new AdminModel();
         $records = $model->get_payroll_attendance_data($month, $year, $adminEmpId);
-        $is_finalized = (!empty($records) && $records[0]['is_finalized'] == 'Y') ? true : false;
+        $is_finalized = (!empty($records) && strtoupper(trim($records[0]['is_finalized'])) === 'Y') ? true : false;
+
+        // Calculate KPI summary stats
+        $totalEmployees   = count($records);
+        $totalWorkingDays = 0;
+        $totalPaidDays    = 0;
+        $totalUnpaidDays  = 0;
+        $totalLeaves      = 0;
+        $totalHolidays    = 0;
+        $totalPresent     = 0;
+
+        foreach ($records as $r) {
+            $totalWorkingDays += (float)($r['working_days'] ?? 0);
+            $totalPaidDays    += (float)($r['paid_days'] ?? 0);
+            $totalUnpaidDays  += (float)($r['unpaid_days'] ?? 0);
+            $totalLeaves      += (float)($r['leave_days'] ?? 0);
+            $totalHolidays    += ((float)($r['holiday_days'] ?? 0) + (float)($r['weekly_off_days'] ?? 0));
+            $totalPresent     += (float)($r['present_days'] ?? 0);
+        }
+
+        // Calculate cut-off cycle dates dynamically from company_settings
+        $settingsModel   = new \App\Models\CompanySettingsModel();
+        $companySettings = $settingsModel->getSettings();
+        $cycleStartDay   = (int)($companySettings['payroll_cycle_start_day'] ?? 25);
+        $cycleEndDay     = (int)($companySettings['payroll_cycle_end_day'] ?? 24);
+
+        if ($cycleStartDay > $cycleEndDay) {
+            $prevM = ($month == 1) ? 12 : ($month - 1);
+            $prevY = ($month == 1) ? ($year - 1) : $year;
+            $periodStart = sprintf('%04d-%02d-%02d', $prevY, $prevM, $cycleStartDay);
+            $periodEnd   = sprintf('%04d-%02d-%02d', $year, $month, $cycleEndDay);
+        } else {
+            $periodStart = sprintf('%04d-%02d-%02d', $year, $month, $cycleStartDay);
+            $periodEnd   = sprintf('%04d-%02d-%02d', $year, $month, $cycleEndDay);
+        }
+        $payDate     = date('Y-m-t', strtotime(sprintf('%04d-%02d-01', $year, $month)));
+        $monthName   = date('F', mktime(0, 0, 0, $month, 10, $year));
+        $cycleCode   = strtoupper(substr($monthName, 0, 3)) . "-{$year} (" . date('d M', strtotime($periodStart)) . " - " . date('d M', strtotime($periodEnd)) . ")";
+
+        $payrollModel  = new \App\Models\PayrollModel();
+        $adminModel    = new AdminModel();
+        $existingCycle = $payrollModel->get_cycle_by_period($periodStart, $periodEnd);
+
+        // Check raw attendance punch records in attendance table
+        $rawAttendance = $adminModel->get_raw_attendance_punch_counts($periodStart, $periodEnd);
 
         $data = [
-            'title'         => 'Payroll Attendance',
-            'records'       => $records,
-            'selectedMonth' => $month,
-            'selectedYear'  => $year,
-            'is_finalized'  => $is_finalized
+            'title'            => 'Payroll Attendance',
+            'records'          => $records,
+            'selectedMonth'    => $month,
+            'selectedYear'     => $year,
+            'monthName'        => $monthName,
+            'is_finalized'     => $is_finalized,
+            'periodStart'      => $periodStart,
+            'periodEnd'        => $periodEnd,
+            'payDate'          => $payDate,
+            'cycleCode'        => $cycleCode,
+            'existingCycle'    => $existingCycle,
+            'rawPunches'       => (int)($rawAttendance['raw_punches'] ?? 0),
+            'rawEmps'          => (int)($rawAttendance['raw_emps'] ?? 0),
+            'stats'            => [
+                'totalEmployees'   => $totalEmployees,
+                'totalWorkingDays' => $totalWorkingDays,
+                'totalPaidDays'    => $totalPaidDays,
+                'totalUnpaidDays'  => $totalUnpaidDays,
+                'totalLeaves'      => $totalLeaves,
+                'totalHolidays'    => $totalHolidays,
+                'totalPresent'     => $totalPresent,
+            ]
         ];
 
         return view('Layouts/Header')

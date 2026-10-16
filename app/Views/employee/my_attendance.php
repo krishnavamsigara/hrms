@@ -883,14 +883,22 @@ table.dataTable thead .sorting_desc:after {
         $pEndTs   = !empty($attend['period_end']) ? strtotime($attend['period_end']) : false;
 
         if (!$pStartTs || !$pEndTs) {
+            $settingsModel = new \App\Models\CompanySettingsModel();
+            $cSet = $settingsModel->getSettings();
+            $cStartDay = (int)($cSet['payroll_cycle_start_day'] ?? 25);
+            $cEndDay   = (int)($cSet['payroll_cycle_end_day'] ?? 24);
             $selM = (int)($selectedMonth ?? date('m'));
             $selY = (int)($selectedYear ?? date('Y'));
 
-            $prevM = ($selM == 1) ? 12 : ($selM - 1);
-            $prevY = ($selM == 1) ? ($selY - 1) : $selY;
-
-            $pStartTs = strtotime(sprintf('%04d-%02d-25', $prevY, $prevM));
-            $pEndTs   = strtotime(sprintf('%04d-%02d-24', $selY, $selM));
+            if ($cStartDay > $cEndDay) {
+                $prevM = ($selM == 1) ? 12 : ($selM - 1);
+                $prevY = ($selM == 1) ? ($selY - 1) : $selY;
+                $pStartTs = strtotime(sprintf('%04d-%02d-%02d', $prevY, $prevM, $cStartDay));
+                $pEndTs   = strtotime(sprintf('%04d-%02d-%02d', $selY, $selM, $cEndDay));
+            } else {
+                $pStartTs = strtotime(sprintf('%04d-%02d-%02d', $selY, $selM, $cStartDay));
+                $pEndTs   = strtotime(sprintf('%04d-%02d-%02d', $selY, $selM, $cEndDay));
+            }
         }
 
         $summaryStartStr = date('M d', $pStartTs);
@@ -979,16 +987,24 @@ table.dataTable thead .sorting_desc:after {
             * = June 25, 2026 to July 24, 2026
             */
 
-            // Start = 25th of previous month
-            $periodStart = new DateTime(
-                sprintf('%04d-%02d-25', $calendarYear, $calendarMonth)
-            );
-            $periodStart->modify('-1 month');
-
-            // End = 24th of selected month
-            $periodEnd = new DateTime(
-                sprintf('%04d-%02d-24', $calendarYear, $calendarMonth)
-            );
+            if (!empty($attend['period_start']) && !empty($attend['period_end'])) {
+                $periodStart = new DateTime($attend['period_start']);
+                $periodEnd   = new DateTime($attend['period_end']);
+            } else {
+                $settingsModel = new \App\Models\CompanySettingsModel();
+                $cSet = $settingsModel->getSettings();
+                $cStartDay = (int)($cSet['payroll_cycle_start_day'] ?? 25);
+                $cEndDay   = (int)($cSet['payroll_cycle_end_day'] ?? 24);
+                if ($cStartDay > $cEndDay) {
+                    $prevM = ($calendarMonth == 1) ? 12 : ($calendarMonth - 1);
+                    $prevY = ($calendarMonth == 1) ? ($calendarYear - 1) : $calendarYear;
+                    $periodStart = new DateTime(sprintf('%04d-%02d-%02d', $prevY, $prevM, $cStartDay));
+                    $periodEnd   = new DateTime(sprintf('%04d-%02d-%02d', $calendarYear, $calendarMonth, $cEndDay));
+                } else {
+                    $periodStart = new DateTime(sprintf('%04d-%02d-%02d', $calendarYear, $calendarMonth, $cStartDay));
+                    $periodEnd   = new DateTime(sprintf('%04d-%02d-%02d', $calendarYear, $calendarMonth, $cEndDay));
+                }
+            }
 
             // Total days in cycle
             $periodDays = $periodStart->diff($periodEnd)->days + 1;

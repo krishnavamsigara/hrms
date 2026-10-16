@@ -4,14 +4,17 @@ namespace App\Controllers;
 
 use App\Models\PayrollModel;
 use App\Models\AdminModel;
+use App\Models\CompanySettingsModel;
 
 class PayrollAdminController extends BaseController
 {
     protected $payrollModel;
+    protected $settingsModel;
 
     public function __construct()
     {
-        $this->payrollModel = new PayrollModel();
+        $this->payrollModel  = new PayrollModel();
+        $this->settingsModel = new CompanySettingsModel();
     }
 
     private function checkAuth()
@@ -20,17 +23,120 @@ class PayrollAdminController extends BaseController
         if (!$session->get('logged_in')) {
             return false;
         }
-        $role = $session->get('active_role') ?? $session->get('user_category');
-        return in_array(strtoupper($role), ['ADMIN', 'HR', 'SUPERADMIN']);
+        $role = $session->get('active_role') ?? $session->get('current_user_cat') ?? $session->get('user_category');
+        return in_array(strtoupper((string)$role), ['ADMIN', 'HR', 'SUPERADMIN']);
     }
 
+    private function getAdminId(): string
+    {
+        return session()->get('emp_id') ?? 'ADMIN';
+    }
+
+    /**
+     * 1. PAYROLL DASHBOARD
+     */
     public function index()
     {
         if (!$this->checkAuth()) {
             return redirect()->to(base_url('/'));
         }
 
-        $data['cycles'] = $this->payrollModel->get_all_cycles();
+        $settings = $this->settingsModel->getSettings();
+        $runs = $this->payrollModel->get_all_runs();
+
+        // Cutoff cycle days from company_settings
+        $cycleStartDay = (int)($settings['payroll_cycle_start_day'] ?? 25);
+        $cycleEndDay   = (int)($settings['payroll_cycle_end_day'] ?? 24);
+
+        // Fetch attendance summaries map for FY 2026-27
+        $attSummaries = $this->payrollModel->get_all_payroll_attendance_summaries();
+        $attStatusMap = [];
+        foreach ($attSummaries as $as) {
+            $key = sprintf('%04d-%02d', (int)$as['payroll_year'], (int)$as['payroll_month']);
+            $attStatusMap[$key] = [
+                'finalized' => (strtoupper(trim((string)$as['is_finalized'])) === 'Y'),
+                'count'     => (int)$as['cnt'],
+            ];
+        }
+
+        // Map existing runs by YYYY-MM
+        $runMap = [];
+        foreach ($runs as $r) {
+            $key = sprintf('%04d-%02d', (int)$r['payroll_year'], (int)$r['payroll_month']);
+            $runMap[$key] = $r;
+        }
+
+        // Selected FY (default 2026-27)
+        $selectedFY = $this->request->getVar('fy') ?: '2026-27';
+        $fyStartYear = (int)substr($selectedFY, 0, 4);
+        $fyEndYear   = $fyStartYear + 1;
+
+        $fyMonths = [];
+        for ($m = 4; $m <= 12; $m++) {
+            $fyMonths[] = ['month' => $m, 'year' => $fyStartYear];
+        }
+        for ($m = 1; $m <= 3; $m++) {
+            $fyMonths[] = ['month' => $m, 'year' => $fyEndYear];
+        }
+
+        $fyMatrix = [];
+        foreach ($fyMonths as $fm) {
+            $m = $fm['month'];
+            $y = $fm['year'];
+            $key = sprintf('%04d-%02d', $y, $m);
+
+            if ($cycleStartDay > $cycleEndDay) {
+                $prevM = ($m == 1) ? 12 : ($m - 1);
+                $prevY = ($m == 1) ? ($y - 1) : $y;
+                $pStart = sprintf('%04d-%02d-%02d', $prevY, $prevM, $cycleStartDay);
+                $pEnd   = sprintf('%04d-%02d-%02d', $y, $m, $cycleEndDay);
+            } else {
+                $pStart = sprintf('%04d-%02d-%02d', $y, $m, $cycleStartDay);
+                $pEnd   = sprintf('%04d-%02d-%02d', $y, $m, $cycleEndDay);
+            }
+
+            $att = $attStatusMap[$key] ?? null;
+            $run = $runMap[$key] ?? null;
+
+            $fyMatrix[] = [
+                'month'         => $m,
+                'year'          => $y,
+                'month_name'    => date('F', mktime(0, 0, 0, $m, 10)),
+                'period_start'  => $pStart,
+                'period_end'    => $pEnd,
+                'period_label'  => date('d M', strtotime($pStart)) . ' - ' . date('d M Y', strtotime($pEnd)),
+                'att_exists'    => !empty($att),
+                'att_finalized' => !empty($att['finalized']),
+                'staff_count'   => !empty($att['count']) ? $att['count'] : 0,
+                'run'           => $run,
+            ];
+        }
+
+        // Summary Statistics
+        $totalActiveEmps = count($this->payrollModel->get_all_employee_structures());
+        $finalizedRunsCount = 0;
+        $totalDisbursed = 0;
+        foreach ($runs as $r) {
+            if ($r['payroll_status'] === 'FINALIZED') {
+                $finalizedRunsCount++;
+                $totalDisbursed += (float)$r['total_net_payout'];
+            }
+        }
+
+        $data = [
+            'title'            => 'Payroll Dashboard',
+            'settings'         => $settings,
+            'runs'             => $runs,
+            'fyMatrix'         => $fyMatrix,
+            'selectedFY'       => $selectedFY,
+            'totalActiveEmps'  => $totalActiveEmps,
+            'finalizedRuns'    => $finalizedRunsCount,
+            'totalDisbursed'   => $totalDisbursed,
+            'suggestedMonth'   => 9, // September 2026 current default
+            'suggestedYear'    => 2026,
+            'cycleStartDay'    => $cycleStartDay,
+            'cycleEndDay'      => $cycleEndDay,
+        ];
 
         return view('Layouts/Header')
             . view('Layouts/Sidebar')
@@ -38,295 +144,250 @@ class PayrollAdminController extends BaseController
             . view('Layouts/Footer');
     }
 
-    public function create_cycle()
+    /**
+     * 2. CREATE PAYROLL RUN (USES sp_create_payroll_run)
+     */
+    public function create_run()
     {
         if (!$this->checkAuth()) {
             return redirect()->to(base_url('/'));
         }
 
-        $payroll_code = $this->request->getPost('payroll_code');
-        $period_start = $this->request->getPost('period_start');
-        $period_end   = $this->request->getPost('period_end');
-        $pay_date     = $this->request->getPost('pay_date');
+        $month    = (int)$this->request->getPost('payroll_month');
+        $year     = (int)$this->request->getPost('payroll_year');
+        $dayBasis = $this->request->getPost('salary_day_basis') ?: 'FIXED_30';
+        $adminId  = $this->getAdminId();
 
-        if (empty($payroll_code) || empty($period_start) || empty($period_end)) {
-            return redirect()->back()->with('error', 'Please fill all required cycle fields.');
+        if ($month < 1 || $month > 12 || $year < 2000) {
+            return redirect()->back()->with('error', 'Please select a valid payroll month and year.');
         }
 
-        $session = session();
-        $actor   = $session->get('emp_id') ?? 'ADMIN';
+        $res = $this->payrollModel->sp_create_payroll_run($month, $year, $dayBasis, $adminId);
 
-        $cycle_id = $this->payrollModel->create_payroll_cycle([
-            'payroll_code' => $payroll_code,
-            'period_start' => $period_start,
-            'period_end'   => $period_end,
-            'pay_date'     => $pay_date,
-            'created_by'   => $actor,
-        ]);
+        if (!empty($res['run_id'])) {
+            $runId = (int)$res['run_id'];
 
-        // Auto-populate live attendance snapshot for all active employees from user_login_details
-        $this->payrollModel->populate_attendance_snapshot($cycle_id);
+            // Auto-calculate all active employees
+            $calcRes = $this->payrollModel->sp_calculate_monthly_payroll($runId, $adminId);
 
-        // Auto-run initial payroll calculation
-        $this->payrollModel->calculate_payroll_cycle($cycle_id, $actor);
+            $msg = $res['status'] === 'EXISTING' 
+                ? "Payroll run already existed for this period. Recalculated {$calcRes['processed']} employees."
+                : "Payroll run created & calculated successfully for {$calcRes['processed']} employees!";
 
-        return redirect()->to(base_url('admin/payroll/view/' . $cycle_id))->with('success', 'Payroll cycle created & draft calculated successfully for active employees!');
+            return redirect()->to(base_url("admin/payroll/run/{$runId}"))->with('success', $msg);
+        }
+
+        return redirect()->back()->with('error', $res['message'] ?? 'Failed to create payroll run.');
     }
 
-    public function view_cycle($cycle_id)
+    /**
+     * 3. PAYROLL RUNS LIST / HISTORY
+     */
+    public function runs()
     {
         if (!$this->checkAuth()) {
             return redirect()->to(base_url('/'));
         }
 
-        $data['cycle'] = $this->payrollModel->get_cycle_by_id($cycle_id);
-        if (!$data['cycle']) {
-            return redirect()->to(base_url('admin/payroll'))->with('error', 'Payroll cycle not found.');
-        }
+        $runs = $this->payrollModel->get_all_runs();
+        $settings = $this->settingsModel->getSettings();
 
-        $db = \Config\Database::connect();
-        $data['employees'] = $db->table('payroll_employees pe')
-            ->select('pe.*, dm.department_name as department, dsm.designation_name as designation')
-            ->join('user_details ud', 'ud.emp_id = pe.emp_id', 'left')
-            ->join('department_master dm', 'dm.department_id = ud.department', 'left')
-            ->join('designation_master dsm', 'dsm.designation_id = ud.designation', 'left')
-            ->where('pe.payroll_cycle_id', $cycle_id)
-            ->get()->getResultArray();
-
-        $data['adjustments']        = $this->payrollModel->get_payroll_adjustments($cycle_id);
-        $data['components']         = $this->payrollModel->get_salary_components();
-        $data['attendance_matrix']  = $this->payrollModel->get_cycle_attendance_matrix($cycle_id);
+        $data = [
+            'title'    => 'Payroll Processing & Runs',
+            'runs'     => $runs,
+            'settings' => $settings,
+        ];
 
         return view('Layouts/Header')
             . view('Layouts/Sidebar')
-            . view('admin/payroll/view_cycle', $data)
+            . view('admin/payroll/runs', $data)
             . view('Layouts/Footer');
     }
 
-    public function import_attendance($cycle_id)
+    /**
+     * 4. PAYROLL RUN WORKBENCH / DETAIL (Deep view of a run)
+     */
+    public function run_detail(int $runId)
     {
         if (!$this->checkAuth()) {
             return redirect()->to(base_url('/'));
         }
 
-        $cycle = $this->payrollModel->get_cycle_by_id($cycle_id);
-        if (!$cycle) {
-            return redirect()->to(base_url('admin/payroll'))->with('error', 'Payroll cycle not found.');
+        $run = $this->payrollModel->get_run_by_id($runId);
+        if (!$run) {
+            return redirect()->to(base_url('admin/payroll/runs'))->with('error', 'Payroll run not found.');
         }
 
-        $file = $this->request->getFile('excel_file');
+        $search = trim((string)$this->request->getGet('search'));
+        $status = trim((string)$this->request->getGet('status'));
 
-        if ($file && $file->isValid() && !$file->hasMoved()) {
-            $filePath = $file->getTempName();
+        $employees = $this->payrollModel->get_run_employees($runId, $search, $status);
+        $validation = $this->payrollModel->sp_validate_payroll_run($runId);
+        $settings = $this->settingsModel->getSettings();
 
-            $attendance_rows = [];
-            $handle = fopen($filePath, "r");
-            if ($handle !== FALSE) {
-                $header = fgetcsv($handle, 2000, ",");
-                while (($row = fgetcsv($handle, 2000, ",")) !== FALSE) {
-                    if (count($row) >= 3) {
-                        $attendance_rows[] = [
-                            'emp_id'          => trim($row[0]),
-                            'attendance_date' => trim($row[1]),
-                            'status'          => trim($row[2]),
-                            'worked_hours'    => isset($row[3]) ? trim($row[3]) : 8.0,
-                        ];
-                    }
-                }
-                fclose($handle);
-            }
+        $data = [
+            'title'      => 'Payroll Run #' . $runId . ' — ' . date('F Y', strtotime($run['period_end'])),
+            'run'        => $run,
+            'employees'  => $employees,
+            'validation' => $validation,
+            'settings'   => $settings,
+            'search'     => $search,
+            'status'     => $status,
+        ];
 
-            if (!empty($attendance_rows)) {
-                $this->payrollModel->import_excel_attendance($cycle_id, $attendance_rows);
-                return redirect()->to(base_url('admin/payroll/view/' . $cycle_id))
-                    ->with('success', count($attendance_rows) . ' attendance records imported successfully!');
-            }
-        }
-
-        // Fallback: Populate attendance snapshot automatically from user_details
-        $db = \Config\Database::connect();
-        $users = $db->table('user_details')->select('emp_id')->get()->getResultArray();
-
-        $period_start = new \DateTime($cycle['period_start']);
-        $period_end   = new \DateTime($cycle['period_end']);
-        $period_end->modify('+1 day');
-        $daterange = new \DatePeriod($period_start, new \DateInterval('P1D'), $period_end);
-
-        $attendance_rows = [];
-        foreach ($users as $u) {
-            foreach ($daterange as $date) {
-                $dt = $date->format('Y-m-d');
-                $attendance_rows[] = [
-                    'emp_id'          => $u['emp_id'],
-                    'attendance_date' => $dt,
-                    'status'          => 'P',
-                    'worked_hours'    => 8.0,
-                ];
-            }
-        }
-
-        $this->payrollModel->import_excel_attendance($cycle_id, $attendance_rows);
-
-        return redirect()->to(base_url('admin/payroll/view/' . $cycle_id))
-            ->with('success', 'Attendance snapshot automatically generated from user directory!');
+        return view('Layouts/Header')
+            . view('Layouts/Sidebar')
+            . view('admin/payroll/run_detail', $data)
+            . view('Layouts/Footer');
     }
 
-    public function calculate_cycle($cycle_id)
+    /**
+     * 5. RECALCULATE RUN (sp_calculate_monthly_payroll)
+     */
+    public function calculate_run(int $runId)
     {
         if (!$this->checkAuth()) {
             return redirect()->to(base_url('/'));
         }
 
-        $session = session();
-        $actor = $session->get('emp_id') ?? 'HR_ADMIN';
+        $adminId = $this->getAdminId();
+        $res = $this->payrollModel->sp_calculate_monthly_payroll($runId, $adminId);
 
-        $success = $this->payrollModel->calculate_payroll_cycle($cycle_id, $actor);
-        if ($success) {
-            return redirect()->to(base_url('admin/payroll/view/' . $cycle_id))
-                ->with('success', 'Payroll calculation completed successfully!');
+        if ($res['status'] === 'SUCCESS' || $res['status'] === 'PARTIAL') {
+            return redirect()->to(base_url("admin/payroll/run/{$runId}"))
+                ->with('success', "Payroll calculation completed! Processed: {$res['processed']}, Errors: {$res['errors']}.");
         }
 
-        return redirect()->to(base_url('admin/payroll/view/' . $cycle_id))
-            ->with('error', 'Failed to calculate payroll.');
+        return redirect()->to(base_url("admin/payroll/run/{$runId}"))
+            ->with('error', $res['message'] ?? 'Failed to calculate payroll.');
     }
 
-    public function add_adjustment()
+    /**
+     * 6. RECALCULATE SINGLE EMPLOYEE
+     */
+    public function calculate_employee(int $runId, string $empId)
+    {
+        if (!$this->checkAuth()) {
+            return $this->response->setJSON(['status' => 'ERROR', 'message' => 'Unauthorized']);
+        }
+
+        $adminId = $this->getAdminId();
+        $res = $this->payrollModel->sp_calculate_employee_payroll($runId, $empId, $adminId);
+
+        return $this->response->setJSON($res);
+    }
+
+    /**
+     * 7. GET EMPLOYEE RUN COMPONENTS (AJAX Modal)
+     */
+    public function get_employee_run_components_ajax()
+    {
+        if (!$this->checkAuth()) {
+            return $this->response->setJSON(['status' => 'ERROR', 'message' => 'Unauthorized']);
+        }
+
+        $peId = (int)$this->request->getPost('payroll_employee_id');
+        if (!$peId) {
+            return $this->response->setJSON(['status' => 'ERROR', 'message' => 'Invalid employee reference']);
+        }
+
+        $components = $this->payrollModel->get_employee_run_components($peId);
+        return $this->response->setJSON(['status' => 'SUCCESS', 'components' => $components]);
+    }
+
+    /**
+     * 8. VALIDATE RUN (AJAX)
+     */
+    public function validate_run(int $runId)
+    {
+        if (!$this->checkAuth()) {
+            return $this->response->setJSON(['status' => 'ERROR', 'message' => 'Unauthorized']);
+        }
+
+        $report = $this->payrollModel->sp_validate_payroll_run($runId);
+        return $this->response->setJSON(['status' => 'SUCCESS', 'report' => $report]);
+    }
+
+    /**
+     * 9. APPROVE RUN (sp_approve_payroll_run)
+     */
+    public function approve_run(int $runId)
     {
         if (!$this->checkAuth()) {
             return redirect()->to(base_url('/'));
         }
 
-        $cycle_id = $this->request->getPost('payroll_cycle_id');
-        $emp_id   = $this->request->getPost('emp_id');
-        $comp_id  = $this->request->getPost('component_id');
-        $type     = $this->request->getPost('adjustment_type');
-        $amount   = (float)$this->request->getPost('amount');
-        $reason   = $this->request->getPost('reason');
+        $adminId = $this->getAdminId();
+        $res = $this->payrollModel->sp_approve_payroll_run($runId, $adminId);
 
-        if (empty($cycle_id) || empty($emp_id) || empty($amount) || empty($reason)) {
-            return redirect()->back()->with('error', 'Missing required fields for HR adjustment.');
+        if ($res['status'] === 'SUCCESS') {
+            return redirect()->to(base_url("admin/payroll/run/{$runId}"))
+                ->with('success', 'Payroll run approved successfully! Ready for finalization.');
         }
 
-        $session = session();
-        $this->payrollModel->add_payroll_adjustment([
-            'payroll_cycle_id' => $cycle_id,
-            'emp_id'           => $emp_id,
-            'component_id'     => $comp_id ?: null,
-            'adjustment_type'  => $type,
-            'amount'           => $amount,
-            'reason'           => $reason,
-            'created_by'       => $session->get('emp_id') ?? 'HR_ADMIN',
-        ]);
-
-        $this->payrollModel->calculate_payroll_cycle($cycle_id, $session->get('emp_id') ?? 'HR_ADMIN');
-
-        return redirect()->to(base_url('admin/payroll/view/' . $cycle_id))
-            ->with('success', 'HR adjustment saved and payroll recalculated!');
+        return redirect()->to(base_url("admin/payroll/run/{$runId}"))
+            ->with('error', $res['message'] ?? 'Failed to approve payroll run.');
     }
 
-    public function update_status()
+    /**
+     * 10. FINALIZE RUN & GENERATE PAYSLIPS (sp_finalize_payroll_run)
+     */
+    public function finalize_run(int $runId)
     {
         if (!$this->checkAuth()) {
             return redirect()->to(base_url('/'));
         }
 
-        $cycle_id = $this->request->getPost('payroll_cycle_id');
-        $status   = $this->request->getPost('status');
+        $adminId = $this->getAdminId();
+        $res = $this->payrollModel->sp_finalize_payroll_run($runId, $adminId);
 
-        if (empty($cycle_id) || empty($status)) {
-            return redirect()->back()->with('error', 'Invalid status update parameters.');
+        if ($res['status'] === 'SUCCESS') {
+            return redirect()->to(base_url("admin/payroll/run/{$runId}"))
+                ->with('success', $res['message']);
         }
 
-        $session = session();
-        $actor   = $session->get('emp_id') ?? 'HR_ADMIN';
-
-        $this->payrollModel->update_cycle_status($cycle_id, $status, $actor);
-
-        $msg = 'Payroll status updated to ' . $status;
-        if ($status == 'LOCKED') {
-            $msg = 'Payroll cycle locked successfully! Payslips & salary records are now permanently frozen.';
-        }
-
-        return redirect()->to(base_url('admin/payroll/view/' . $cycle_id))->with('success', $msg);
+        return redirect()->to(base_url("admin/payroll/run/{$runId}"))
+            ->with('error', $res['message'] ?? 'Failed to finalize payroll run.');
     }
 
-    public function save_employee_draft()
+    /**
+     * 11. REOPEN RUN (sp_reopen_payroll_run)
+     */
+    public function reopen_run(int $runId)
     {
         if (!$this->checkAuth()) {
             return redirect()->to(base_url('/'));
         }
 
-        $cycle_id     = $this->request->getPost('payroll_cycle_id');
-        $emp_id       = $this->request->getPost('emp_id');
-        $present_days = $this->request->getPost('present_days');
-        $lop_days     = $this->request->getPost('lop_days');
-        $adj_earning  = $this->request->getPost('manual_earnings_adj');
-        $adj_deduct   = $this->request->getPost('manual_deductions_adj');
-        $reason       = $this->request->getPost('reason') ?: 'HR Draft Adjustment';
+        $adminId = $this->getAdminId();
+        $reason  = $this->request->getPost('reason') ?: 'Admin request for payroll correction';
 
-        if (empty($cycle_id) || empty($emp_id)) {
-            return redirect()->back()->with('error', 'Invalid parameters for employee draft update.');
+        $res = $this->payrollModel->sp_reopen_payroll_run($runId, $adminId, $reason);
+
+        if ($res['status'] === 'SUCCESS') {
+            return redirect()->to(base_url("admin/payroll/run/{$runId}"))
+                ->with('warning', $res['message']);
         }
 
-        $this->payrollModel->save_employee_payroll_draft([
-            'payroll_cycle_id'      => $cycle_id,
-            'emp_id'                => $emp_id,
-            'present_days'          => $present_days,
-            'lop_days'              => $lop_days,
-            'manual_earnings_adj'   => $adj_earning,
-            'manual_deductions_adj' => $adj_deduct,
-            'reason'                => $reason,
-        ]);
-
-        return redirect()->to(base_url('admin/payroll/view/' . $cycle_id))
-            ->with('success', "Draft salary & LOP updated successfully for Employee {$emp_id}!");
+        return redirect()->to(base_url("admin/payroll/run/{$runId}"))
+            ->with('error', $res['message'] ?? 'Failed to reopen payroll run.');
     }
 
-    public function employee_detail($cycle_id, $emp_id)
-    {
-        if (!$this->checkAuth()) {
-            return $this->response->setJSON(['status' => 'error', 'message' => 'Unauthorized']);
-        }
-
-        $db = \Config\Database::connect();
-        $emp_payroll = $db->table('payroll_employees')
-            ->where('payroll_cycle_id', $cycle_id)
-            ->where('emp_id', $emp_id)
-            ->get()->getRowArray();
-
-        $adjustments = $this->payrollModel->get_payroll_adjustments($cycle_id, $emp_id);
-        $histories   = $db->table('payroll_calculation_histories')
-            ->where('payroll_cycle_id', $cycle_id)
-            ->where('emp_id', $emp_id)
-            ->orderBy('id', 'DESC')
-            ->get()->getResultArray();
-
-        $attendances = $db->table('payroll_attendances')
-            ->where('payroll_cycle_id', $cycle_id)
-            ->where('emp_id', $emp_id)
-            ->orderBy('attendance_date', 'ASC')
-            ->get()->getResultArray();
-
-        return $this->response->setJSON([
-            'status'      => 'success',
-            'payroll'     => $emp_payroll,
-            'adjustments' => $adjustments,
-            'histories'   => $histories,
-            'attendances' => $attendances,
-        ]);
-    }
-
+    /**
+     * 12. SALARY COMPONENTS MASTER
+     */
     public function components()
     {
         if (!$this->checkAuth()) {
             return redirect()->to(base_url('/'));
         }
 
-        if (strtolower($this->request->getMethod()) === 'post' || !empty($this->request->getPost('component_code'))) {
-            return $this->save_component();
-        }
+        $components = $this->payrollModel->get_salary_component_master();
 
-        $data['components'] = $this->payrollModel->get_salary_components();
+        $data = [
+            'title'      => 'Salary Component Master',
+            'components' => $components,
+        ];
 
         return view('Layouts/Header')
             . view('Layouts/Sidebar')
@@ -340,105 +401,81 @@ class PayrollAdminController extends BaseController
             return redirect()->to(base_url('/'));
         }
 
-        $id    = $this->request->getPost('id');
-        $code  = strtoupper(trim($this->request->getPost('component_code')));
-        $name  = trim($this->request->getPost('component_name'));
-        $type  = $this->request->getPost('component_type');
-        $calc  = $this->request->getPost('calculation_type');
-        $val   = (float)($this->request->getPost('value') ?? 0);
-        $base  = $this->request->getPost('based_on');
-        $stat  = (int)($this->request->getPost('is_statutory') ?? 0);
-        $emp   = (int)($this->request->getPost('is_employer_contribution') ?? 0);
-        $order = (int)($this->request->getPost('display_order') ?? 1);
+        $id        = $this->request->getPost('component_id');
+        $code      = strtoupper(trim((string)$this->request->getPost('component_code')));
+        $name      = trim((string)$this->request->getPost('component_name'));
+        $type      = $this->request->getPost('component_type');
+        $calcType  = $this->request->getPost('calculation_type');
+        $pctBase   = $this->request->getPost('percentage_base') ?: 'NONE';
+        $pctVal    = $this->request->getPost('percentage_value');
+        $isLop     = (int)($this->request->getPost('is_lop_applicable') ? 1 : 0);
+        $isTaxable = (int)($this->request->getPost('is_taxable') ? 1 : 0);
+        $isActive  = (int)($this->request->getPost('is_active') ? 1 : 0);
 
         if (empty($code) || empty($name)) {
-            return redirect()->to(base_url('admin/payroll/components'))->with('error', 'Component code and name are required.');
+            return redirect()->back()->with('error', 'Component code and name are required.');
         }
 
-        $this->payrollModel->save_salary_component([
-            'id'                       => $id ?: null,
-            'component_code'           => $code,
-            'component_name'           => $name,
-            'component_type'           => $type,
-            'calculation_type'         => $calc,
-            'value'                    => $val,
-            'based_on'                 => $base,
-            'is_statutory'             => $stat,
-            'is_employer_contribution' => $emp,
-            'display_order'            => $order,
-        ]);
+        $data = [
+            'component_code'    => $code,
+            'component_name'    => $name,
+            'component_type'    => $type,
+            'calculation_type'  => $calcType,
+            'percentage_base'   => $pctBase,
+            'percentage_value'  => ($calcType === 'PERCENTAGE' && is_numeric($pctVal)) ? (float)$pctVal : null,
+            'is_lop_applicable' => $isLop,
+            'is_taxable'        => $isTaxable,
+            'is_active'         => $isActive,
+        ];
+        if (!empty($id)) {
+            $data['component_id'] = (int)$id;
+        }
 
+        $this->payrollModel->save_salary_component_master($data);
         return redirect()->to(base_url('admin/payroll/components'))->with('success', 'Salary component saved successfully!');
     }
 
-    public function delete_component($id)
+    public function toggle_component(int $id)
     {
         if (!$this->checkAuth()) {
             return redirect()->to(base_url('/'));
         }
 
-        $this->payrollModel->delete_salary_component($id);
-        return redirect()->to(base_url('admin/payroll/components'))->with('success', 'Salary component deleted successfully!');
+        $this->payrollModel->toggle_salary_component_master($id);
+        return redirect()->to(base_url('admin/payroll/components'))->with('success', 'Component status toggled!');
     }
 
-    public function toggle_component($id)
+    public function delete_component(int $id)
     {
         if (!$this->checkAuth()) {
             return redirect()->to(base_url('/'));
         }
 
-        $this->payrollModel->toggle_salary_component($id);
-        return redirect()->to(base_url('admin/payroll/components'))->with('success', 'Salary component status toggled!');
+        try {
+            $this->payrollModel->delete_salary_component_master($id);
+            return redirect()->to(base_url('admin/payroll/components'))->with('success', 'Component deleted successfully!');
+        } catch (\Throwable $e) {
+            return redirect()->to(base_url('admin/payroll/components'))->with('error', 'Cannot delete component because it is referenced in employee structures or payroll history.');
+        }
     }
 
+    /**
+     * 13. EMPLOYEE SALARY STRUCTURES DIRECTORY
+     */
     public function structures()
     {
         if (!$this->checkAuth()) {
             return redirect()->to(base_url('/'));
         }
 
-        $db = \Config\Database::connect();
-        $data['employees'] = $db->table('user_details ud')
-            ->select('ud.emp_id, ud.emp_name, dm.department_name as department')
-            ->join('department_master dm', 'dm.department_id = ud.department', 'left')
-            ->get()->getResultArray();
+        $structures = $this->payrollModel->get_all_employee_structures();
+        $masterComponents = $this->payrollModel->get_salary_component_master();
 
-        foreach ($data['employees'] as &$e) {
-            $sal = $db->table('employee_salary')
-                ->where('EMP_ID', $e['emp_id'])
-                ->orderBy('id', 'DESC')
-                ->get()->getRowArray();
-
-            $structRow = $db->table('emp_salary_structures')
-                ->where('emp_id', $e['emp_id'])
-                ->where('effective_from IS NOT NULL')
-                ->orderBy('id', 'DESC')
-                ->get()->getRowArray();
-
-            $effDate = (!empty($structRow['effective_from']) && !in_array($structRow['effective_from'], ['0000-00-00', '1970-01-01'])) ? $structRow['effective_from'] : null;
-            $e['effective_from'] = $effDate ?? ((!empty($sal['effective_date']) && !in_array($sal['effective_date'], ['0000-00-00', '1970-01-01'])) ? $sal['effective_date'] : null);
-
-            if (!empty($sal['ctc1']) && (float)$sal['ctc1'] > 0) {
-                $e['ctc'] = (float)$sal['ctc1'];
-            } elseif (!empty($sal['salary']) && (float)$sal['salary'] > 0) {
-                $e['ctc'] = (float)$sal['salary'];
-            } else {
-                $structSum = $db->table('emp_salary_structures es')
-                    ->selectSum('es.amount')
-                    ->join('salary_components sc', 'sc.id = es.component_id')
-                    ->where('es.emp_id', $e['emp_id'])
-                    ->whereIn('sc.component_type', ['EARNING', 'STATUTORY'])
-                    ->get()->getRowArray();
-
-                if (!empty($structSum['amount']) && (float)$structSum['amount'] > 0) {
-                    $e['ctc'] = (float)$structSum['amount'];
-                } else {
-                    $e['ctc'] = 50000.00;
-                }
-            }
-        }
-
-        $data['components'] = $this->payrollModel->get_salary_components();
+        $data = [
+            'title'            => 'Employee Salary Structures',
+            'structures'       => $structures,
+            'masterComponents' => $masterComponents,
+        ];
 
         return view('Layouts/Header')
             . view('Layouts/Sidebar')
@@ -446,65 +483,19 @@ class PayrollAdminController extends BaseController
             . view('Layouts/Footer');
     }
 
-    public function get_emp_structure($emp_id)
+    public function get_structure(string $empId)
     {
         if (!$this->checkAuth()) {
-            return $this->response->setJSON(['status' => 'error', 'message' => 'Unauthorized']);
+            return $this->response->setJSON(['status' => 'ERROR', 'message' => 'Unauthorized']);
         }
 
-        $db = \Config\Database::connect();
-        $emp = $db->table('user_details')
-            ->where('emp_id', $emp_id)
-            ->get()->getRowArray();
-
-        $sal = $db->table('employee_salary')
-            ->where('EMP_ID', $emp_id)
-            ->orderBy('id', 'DESC')
-            ->get()->getRowArray();
-
-        if (!empty($sal['ctc1']) && (float)$sal['ctc1'] > 0) {
-            $ctc = (float)$sal['ctc1'];
-        } elseif (!empty($sal['salary']) && (float)$sal['salary'] > 0) {
-            $ctc = (float)$sal['salary'];
-        } else {
-            $structSum = $db->table('emp_salary_structures es')
-                ->selectSum('es.amount')
-                ->join('salary_components sc', 'sc.id = es.component_id')
-                ->where('es.emp_id', $emp_id)
-                ->whereIn('sc.component_type', ['EARNING', 'STATUTORY'])
-                ->get()->getRowArray();
-
-            if (!empty($structSum['amount']) && (float)$structSum['amount'] > 0) {
-                $ctc = (float)$structSum['amount'];
-            } else {
-                $ctc = 50000.00;
-            }
-        }
-
-        $structures = $this->payrollModel->get_emp_salary_structure($emp_id);
-        $components = $this->payrollModel->get_salary_components();
-
-        $effective_from = null;
-        if (!empty($structures)) {
-            foreach ($structures as $st) {
-                if (!empty($st['effective_from']) && !in_array($st['effective_from'], ['0000-00-00', '1970-01-01'])) {
-                    $effective_from = $st['effective_from'];
-                    break;
-                }
-            }
-        }
-        if (empty($effective_from)) {
-            $effective_from = (!empty($sal['effective_date']) && !in_array($sal['effective_date'], ['0000-00-00', '1970-01-01'])) ? $sal['effective_date'] : date('Y-m-01');
-        }
+        $data = $this->payrollModel->get_employee_structure_full($empId);
+        $masterComps = $this->payrollModel->get_salary_component_master();
 
         return $this->response->setJSON([
-            'status'         => 'success',
-            'emp_id'         => $emp_id,
-            'emp_name'       => $emp['emp_name'] ?? ('Employee ' . $emp_id),
-            'ctc'            => $ctc,
-            'effective_from' => $effective_from,
-            'structures'     => $structures,
-            'components'     => $components,
+            'status'     => 'SUCCESS',
+            'data'       => $data,
+            'master'     => $masterComps,
         ]);
     }
 
@@ -514,89 +505,290 @@ class PayrollAdminController extends BaseController
             return redirect()->to(base_url('/'));
         }
 
-        $emp_id         = $this->request->getPost('emp_id');
-        $ctc            = (float)$this->request->getPost('ctc');
-        $effective_from = $this->request->getPost('effective_from') ?: date('Y-m-01');
-        $components_in  = $this->request->getPost('components') ?? [];
+        $empId         = trim((string)$this->request->getPost('emp_id'));
+        $monthlyCtc    = (float)$this->request->getPost('monthly_ctc');
+        $effectiveFrom = $this->request->getPost('effective_from') ?: date('Y-m-01');
+        $components    = $this->request->getPost('components') ?: [];
+        $adminId       = $this->getAdminId();
 
-        if (empty($emp_id)) {
-            return redirect()->back()->with('error', 'Invalid employee specified.');
+        if (empty($empId) || $monthlyCtc <= 0) {
+            return redirect()->back()->with('error', 'Invalid employee or monthly CTC amount.');
         }
 
-        $db = \Config\Database::connect();
-        $compMasterRaw = $db->table('salary_components')->get()->getResultArray();
-        $compMasterMap = [];
-        foreach ($compMasterRaw as $cm) {
-            $compMasterMap[$cm['id']] = $cm;
+        $this->payrollModel->save_employee_structure_full($empId, $monthlyCtc, $components, $effectiveFrom, $adminId);
+
+        return redirect()->to(base_url('admin/payroll/structures'))->with('success', "Salary structure revision saved and approved for {$empId}!");
+    }
+
+    /**
+     * 14. PAYSLIP MANAGEMENT CENTER
+     */
+    public function payslips()
+    {
+        if (!$this->checkAuth()) {
+            return redirect()->to(base_url('/'));
         }
 
-        $components_data = [];
-        $gross_amount    = 0.00;
-        $total_deduct    = 0.00;
-        $pf_employer     = 0.00;
-        $pf_employee     = 0.00;
-        $pt_amount       = 0.00;
+        $month  = (int)($this->request->getGet('month') ?: 0);
+        $year   = (int)($this->request->getGet('year') ?: 0);
+        $runId  = (int)($this->request->getGet('run_id') ?: 0);
+        $search = trim((string)$this->request->getGet('search'));
 
-        foreach ($components_in as $comp_id => $cdata) {
-            if (!isset($cdata['amount']) && !isset($cdata['value'])) continue;
-            if ($cdata['amount'] === '' && $cdata['value'] === '') continue;
+        $payslips = $this->payrollModel->get_all_payslips(
+            $runId ?: null,
+            $month ?: null,
+            $year ?: null,
+            $search
+        );
+        $runs = $this->payrollModel->get_all_runs();
 
-            $calc_type = strtoupper(trim($cdata['calculation_type'] ?? 'FIXED'));
-            if (!in_array($calc_type, ['PERCENTAGE', 'FIXED', 'SLAB'])) {
-                $calc_type = 'FIXED';
-            }
-
-            $amt = (float)($cdata['amount'] ?? 0);
-            $val = (float)($cdata['value'] ?? 0);
-
-            $components_data[] = [
-                'component_id'     => (int)$comp_id,
-                'calculation_type' => $calc_type,
-                'value'            => $val,
-                'amount'           => $amt,
-                'effective_from'   => $effective_from,
-            ];
-
-            $compInfo = $compMasterMap[$comp_id] ?? null;
-            if ($compInfo) {
-                $cType = $compInfo['component_type'];
-                $cCode = $compInfo['component_code'];
-
-                if ($cType === 'EARNING') {
-                    $gross_amount += $amt;
-                } elseif ($cType === 'DEDUCTION') {
-                    $total_deduct += $amt;
-                    if ($cCode === 'EPF_EMPLOYEE') $pf_employee = $amt;
-                    elseif ($cCode === 'PT') $pt_amount = $amt;
-                } elseif ($cType === 'STATUTORY') {
-                    if ($cCode === 'EPF_EMPLOYER') $pf_employer = $amt;
-                }
-            }
-        }
-
-        $this->payrollModel->save_emp_salary_structure($emp_id, $components_data);
-
-        $net_pay = max(0, $gross_amount - $total_deduct);
-
-        $existing = $db->table('employee_salary')->where('EMP_ID', $emp_id)->get()->getResultArray();
-        $salUpdate = [
-            'ctc1'                     => $ctc,
-            'salary'                   => $ctc,
-            'gross'                    => $gross_amount,
-            'pf_employer_contribution' => $pf_employer,
-            'pf_employee_contribution' => $pf_employee,
-            'pt'                       => $pt_amount,
-            'total_deductions'         => $total_deduct,
-            'net_pay'                  => $net_pay,
+        $data = [
+            'title'    => 'Payslip Management Center',
+            'payslips' => $payslips,
+            'runs'     => $runs,
+            'month'    => $month,
+            'year'     => $year,
+            'runId'    => $runId,
+            'search'   => $search,
         ];
 
-        if (!empty($existing)) {
-            $db->table('employee_salary')->where('EMP_ID', $emp_id)->update($salUpdate);
-        } else {
-            $salUpdate['EMP_ID'] = $emp_id;
-            $db->table('employee_salary')->insert($salUpdate);
+        return view('Layouts/Header')
+            . view('Layouts/Sidebar')
+            . view('admin/payroll/payslips', $data)
+            . view('Layouts/Footer');
+    }
+
+    /**
+     * 15. DIGITAL & PRINTABLE PAYSLIP VIEW
+     */
+    public function view_payslip(int $runId, string $empId)
+    {
+        if (!$this->checkAuth()) {
+            return redirect()->to(base_url('/'));
         }
 
-        return redirect()->to(base_url('admin/payroll/structures'))->with('success', 'Salary structure saved successfully for ' . $emp_id . ' (₹' . number_format($ctc, 2) . ')!');
+        $payslipData = $this->payrollModel->sp_get_employee_payslip($runId, $empId);
+        if (!$payslipData || empty($payslipData['header'])) {
+            return redirect()->to(base_url('admin/payroll/payslips'))->with('error', 'Payslip not found for this employee and period.');
+        }
+
+        $netSalary = (float)$payslipData['header']['net_salary'];
+        $netWords = $this->numberToWordsIndian($netSalary);
+
+        $data = [
+            'title'    => 'Payslip — ' . $payslipData['header']['payslip_number'],
+            'payslip'  => $payslipData,
+            'netWords' => $netWords,
+        ];
+
+        return view('Layouts/Header')
+            . view('Layouts/Sidebar')
+            . view('admin/payroll/payslip_view', $data)
+            . view('Layouts/Footer');
+    }
+
+    /**
+     * 16. REPORTS & BANK RECONCILIATION
+     */
+    public function reports()
+    {
+        if (!$this->checkAuth()) {
+            return redirect()->to(base_url('/'));
+        }
+
+        $runs = $this->payrollModel->get_all_runs();
+        $selectedRunId = (int)($this->request->getGet('run_id') ?: ($runs[0]['payroll_run_id'] ?? 0));
+
+        $activeRun = null;
+        $employees = [];
+        if ($selectedRunId) {
+            $activeRun = $this->payrollModel->get_run_by_id($selectedRunId);
+            $employees = $this->payrollModel->get_run_employees($selectedRunId);
+        }
+
+        $data = [
+            'title'         => 'Payroll Reports & Bank Transfer',
+            'runs'          => $runs,
+            'selectedRunId' => $selectedRunId,
+            'activeRun'     => $activeRun,
+            'employees'     => $employees,
+        ];
+
+        return view('Layouts/Header')
+            . view('Layouts/Sidebar')
+            . view('admin/payroll/reports', $data)
+            . view('Layouts/Footer');
+    }
+
+    /**
+     * 17. EXPORT BANK TRANSFER CSV (NEFT / RTGS)
+     */
+    public function export_bank_csv(int $runId)
+    {
+        if (!$this->checkAuth()) {
+            return redirect()->to(base_url('/'));
+        }
+
+        $run = $this->payrollModel->get_run_by_id($runId);
+        if (!$run) {
+            return redirect()->back()->with('error', 'Run not found.');
+        }
+
+        $employees = $this->payrollModel->get_run_employees($runId);
+        $monthName = date('F_Y', strtotime($run['period_end']));
+        $filename  = "Bank_Transfer_Export_{$monthName}.csv";
+
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+
+        $out = fopen('php://output', 'w');
+        fputs($out, "\xEF\xBB\xBF"); // UTF-8 BOM
+
+        fputcsv($out, ['Emp ID', 'Beneficiary Name', 'Bank Name', 'Account Number', 'IFSC Code', 'Amount (INR)', 'Remarks']);
+
+        foreach ($employees as $e) {
+            fputcsv($out, [
+                $e['emp_id'],
+                $e['emp_name'],
+                $e['bank_name'] ?: 'N/A',
+                $e['bank_account_no'] ?: 'N/A',
+                $e['ifsc'] ?: 'N/A',
+                number_format((float)$e['net_salary'], 2, '.', ''),
+                "Salary " . date('M Y', strtotime($run['period_end']))
+            ]);
+        }
+
+        fclose($out);
+        exit;
+    }
+
+    /**
+     * 18. EXPORT 35-COLUMN MASTER PAYROLL REGISTER CSV
+     */
+    public function export_register_csv(int $runId)
+    {
+        if (!$this->checkAuth()) {
+            return redirect()->to(base_url('/'));
+        }
+
+        $run = $this->payrollModel->get_run_by_id($runId);
+        if (!$run) {
+            return redirect()->back()->with('error', 'Run not found.');
+        }
+
+        $employees = $this->payrollModel->get_run_employees($runId);
+        $monthName = date('F_Y', strtotime($run['period_end']));
+        $filename  = "Payroll_Register_{$monthName}.csv";
+
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+
+        $out = fopen('php://output', 'w');
+        fputs($out, "\xEF\xBB\xBF");
+
+        $headers = [
+            'Emp ID', 'Employee Name', 'Department', 'Designation', 'Total Days', 'Working Days',
+            'Paid Days', 'LOP Days', 'Monthly CTC', 'Gross Earnings', 'LOP Deduction',
+            'Employee Deductions', 'Employer Contributions', 'Net Salary',
+            'Bank Name', 'Account Number', 'IFSC Code', 'Status'
+        ];
+        fputcsv($out, $headers);
+
+        foreach ($employees as $e) {
+            fputcsv($out, [
+                $e['emp_id'],
+                $e['emp_name'],
+                $e['department_name'] ?? '',
+                $e['designation_name'] ?? '',
+                $e['total_days'],
+                $e['working_days'],
+                $e['paid_days'],
+                $e['lop_days'],
+                number_format((float)$e['monthly_ctc'], 2, '.', ''),
+                number_format((float)$e['gross_earnings'], 2, '.', ''),
+                number_format((float)$e['lop_deduction'], 2, '.', ''),
+                number_format((float)$e['other_deductions'], 2, '.', ''),
+                number_format((float)$e['employer_contributions'], 2, '.', ''),
+                number_format((float)$e['net_salary'], 2, '.', ''),
+                $e['bank_name'] ?? '',
+                $e['bank_account_no'] ?? '',
+                $e['ifsc'] ?? '',
+                $e['calculation_status']
+            ]);
+        }
+
+        fclose($out);
+        exit;
+    }
+
+    /**
+     * Helper: Number to Indian currency words
+     */
+    private function numberToWordsIndian(float $amount): string
+    {
+        $amount = round($amount, 2);
+        $rupees = (int)floor($amount);
+        $paise  = (int)round(($amount - $rupees) * 100);
+
+        if ($rupees === 0 && $paise === 0) {
+            return "Zero Rupees Only";
+        }
+
+        $ones = [
+            0 => '', 1 => 'One', 2 => 'Two', 3 => 'Three', 4 => 'Four', 5 => 'Five',
+            6 => 'Six', 7 => 'Seven', 8 => 'Eight', 9 => 'Nine', 10 => 'Ten',
+            11 => 'Eleven', 12 => 'Twelve', 13 => 'Thirteen', 14 => 'Fourteen', 15 => 'Fifteen',
+            16 => 'Sixteen', 17 => 'Seventeen', 18 => 'Eighteen', 19 => 'Nineteen'
+        ];
+        $tens = [
+            2 => 'Twenty', 3 => 'Thirty', 4 => 'Forty', 5 => 'Fifty',
+            6 => 'Sixty', 7 => 'Seventy', 8 => 'Eighty', 9 => 'Ninety'
+        ];
+
+        $convertGroup = function($n) use ($ones, $tens) {
+            $str = '';
+            if ($n >= 100) {
+                $str .= $ones[(int)floor($n / 100)] . ' Hundred ';
+                $n %= 100;
+            }
+            if ($n >= 20) {
+                $str .= $tens[(int)floor($n / 10)] . ' ';
+                $n %= 10;
+            }
+            if ($n > 0) {
+                $str .= $ones[$n] . ' ';
+            }
+            return trim($str);
+        };
+
+        $parts = [];
+        // Crores (>= 10,000,000)
+        if ($rupees >= 10000000) {
+            $crores = (int)floor($rupees / 10000000);
+            $parts[] = $convertGroup($crores) . ' Crore';
+            $rupees %= 10000000;
+        }
+        // Lakhs (>= 100,000)
+        if ($rupees >= 100000) {
+            $lakhs = (int)floor($rupees / 100000);
+            $parts[] = $convertGroup($lakhs) . ' Lakh';
+            $rupees %= 100000;
+        }
+        // Thousands (>= 1,000)
+        if ($rupees >= 1000) {
+            $thousands = (int)floor($rupees / 1000);
+            $parts[] = $convertGroup($thousands) . ' Thousand';
+            $rupees %= 1000;
+        }
+        // Hundreds & remaining
+        if ($rupees > 0) {
+            $parts[] = $convertGroup($rupees);
+        }
+
+        $result = implode(' ', $parts) . ' Rupees';
+        if ($paise > 0) {
+            $result .= ' and ' . $convertGroup($paise) . ' Paise';
+        }
+        return trim($result) . ' Only';
     }
 }

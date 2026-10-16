@@ -39,17 +39,9 @@ class MailController extends BaseController
             return $authRedirect;
         }
 
-        // Fetch candidate list if available for convenience
-        $db = \Config\Database::connect();
-        $candidates = [];
-        if ($db->tableExists('candidate')) {
-            $candidates = $db->table('candidate')->select('refid, emp_name, email, mobile')->get()->getResultArray();
-        }
-
-        $employees = [];
-        if ($db->tableExists('employees')) {
-            $employees = $db->table('employees')->select('emp_id, emp_name, email, mobile')->get()->getResultArray();
-        }
+        // Fetch candidate & employee contact list via stored procedures
+        $candidates = $this->mailModel->getCandidatesForMail();
+        $employees  = $this->mailModel->getEmployeesForMail();
 
         $templates = $this->mailModel->getAllTemplates();
 

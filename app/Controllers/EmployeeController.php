@@ -324,9 +324,9 @@ class EmployeeController extends BaseController
 
     // Notify Reporting Manager
     try {
-        $db = \Config\Database::connect();
-        $userRow = $db->table('user_details')->select('reporting, emp_name')->where('emp_id', $empid)->get()->getRowArray();
-        if (!empty($userRow['reporting'])) {
+        $userRow = $model->get_user_details($empid);
+        $reportingManager = !empty($userRow['reporting_id']) ? $userRow['reporting_id'] : (!empty($userRow['reporting']) ? $userRow['reporting'] : null);
+        if (!empty($reportingManager)) {
             $notifModel = new \App\Models\NotificationModel();
             $notifModel->create_notification(
                 'REQUEST',
@@ -334,7 +334,7 @@ class EmployeeController extends BaseController
                 ($userRow['emp_name'] ?? $empid) . ' submitted a new ' . $category . ' request.',
                 'USER',
                 null,
-                $userRow['reporting'],
+                $reportingManager,
                 $empid,
                 null
             );

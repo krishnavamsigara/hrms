@@ -1,413 +1,286 @@
-<div class="content-wrapper p-3">
-  <div class="content-header">
-    <div class="container-fluid">
-      <div class="row mb-2 align-items-center">
+<div class="content-wrapper" style="min-height: 800px; padding: 20px 24px;">
+  
+  <div class="content-header p-0 mb-3">
+    <div class="container-fluid p-0">
+      <div class="row align-items-center">
         <div class="col-sm-6">
-          <h1 class="m-0 font-weight-bold text-dark">
-            <a href="<?= base_url('admin/payroll') ?>" class="text-secondary mr-2"><i class="fas fa-arrow-left"></i></a>
-            Employee Salary Structures
+          <h1 class="m-0 text-dark font-weight-bold" style="font-size: 24px; letter-spacing: -0.02em;">
+            <i class="fas fa-id-card-alt text-primary mr-2"></i> Employee Salary Structures Directory
           </h1>
-          <p class="text-muted small mb-0">Assign employee-specific salary component formulas, fixed allowances, or custom structures.</p>
+          <p class="text-muted small mb-0 mt-1">
+            Maintain employee-specific compensation structures, effective-date versioning, and approvals.
+          </p>
+        </div>
+        <div class="col-sm-6 text-right">
+          <span class="badge badge-light border text-dark font-weight-bold p-2 mr-2" style="font-size: 13px;">
+            <i class="fas fa-users text-primary mr-1"></i> Active Employees: <?= count($structures) ?>
+          </span>
         </div>
       </div>
     </div>
   </div>
 
-  <section class="content">
-    <div class="container-fluid">
-      <?php if (session()->getFlashdata('success')): ?>
-        <div class="alert alert-success alert-dismissible fade show" role="alert">
-          <i class="fas fa-check-circle mr-2"></i><?= session()->getFlashdata('success') ?>
-          <button type="button" class="close" data-dismiss="alert"><span>&times;</span></button>
-        </div>
-      <?php endif; ?>
-      <?php if (session()->getFlashdata('error')): ?>
-        <div class="alert alert-danger alert-dismissible fade show" role="alert">
-          <i class="fas fa-exclamation-circle mr-2"></i><?= session()->getFlashdata('error') ?>
-          <button type="button" class="close" data-dismiss="alert"><span>&times;</span></button>
-        </div>
-      <?php endif; ?>
+  <?= view('admin/payroll/payroll_nav') ?>
 
-      <div class="card card-outline card-info shadow-sm border-0">
-        <div class="card-header bg-white d-flex align-items-center justify-content-between pt-3">
-          <h3 class="card-title font-weight-bold text-secondary mb-0"><i class="fas fa-users-cog mr-2"></i> Employee Master Salary Assignments</h3>
-          <div class="card-tools">
-            <input type="text" id="empStructureSearch" class="form-control form-control-sm" placeholder="Search employee..." style="width: 220px;">
-          </div>
-        </div>
-        <div class="card-body p-0">
-          <div class="table-responsive">
-            <table class="table table-hover align-middle mb-0" id="structuresTable">
-              <thead class="bg-light text-uppercase text-secondary small">
-                <tr>
-                  <th>Emp ID</th>
-                  <th>Employee Name</th>
-                  <th>Department</th>
-                  <th class="text-right">Monthly CTC</th>
-                  <th class="text-center">Effective From</th>
-                  <th class="text-center">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                <?php if (!empty($employees)): ?>
-                  <?php foreach ($employees as $e): ?>
-                    <tr>
-                      <td class="font-weight-bold text-primary"><?= esc($e['emp_id']) ?></td>
-                      <td class="font-weight-bold text-dark"><?= esc($e['emp_name']) ?></td>
-                      <td><?= esc($e['department'] ?: 'General') ?></td>
-                      <td class="text-right font-weight-bold text-success">₹<?= number_format($e['ctc'] ?: 50000, 2) ?></td>
-                      <td class="text-center">
-                        <span class="badge badge-info px-3 py-1 font-weight-bold">
-                          <i class="fas fa-calendar-alt mr-1"></i>
-                          <?= !empty($e['effective_from']) ? date('d M Y', strtotime($e['effective_from'])) : 'Default' ?>
-                        </span>
-                      </td>
-                      <td class="text-center">
-                        <button class="btn btn-sm btn-primary shadow-sm font-weight-bold btn-configure-structure" data-empid="<?= esc($e['emp_id']) ?>">
-                          <i class="fas fa-edit mr-1"></i> Configure Structure
-                        </button>
-                      </td>
-                    </tr>
-                  <?php endforeach; ?>
-                <?php else: ?>
-                  <tr>
-                    <td colspan="6" class="text-center text-muted py-4">No employee master records found.</td>
-                  </tr>
-                <?php endif; ?>
-              </tbody>
-            </table>
-          </div>
-        </div>
+  <?php if (session()->getFlashdata('success')): ?>
+    <div class="alert alert-success alert-dismissible fade show border-0 shadow-sm" role="alert" style="border-radius: 10px;">
+      <i class="fas fa-check-circle mr-2"></i> <?= session()->getFlashdata('success') ?>
+      <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+    </div>
+  <?php endif; ?>
+
+  <?php if (session()->getFlashdata('error')): ?>
+    <div class="alert alert-danger alert-dismissible fade show border-0 shadow-sm" role="alert" style="border-radius: 10px;">
+      <i class="fas fa-exclamation-triangle mr-2"></i> <?= session()->getFlashdata('error') ?>
+      <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+    </div>
+  <?php endif; ?>
+
+  <div class="card border-0 shadow-sm" style="border-radius: 14px; background: #ffffff;">
+    <div class="card-header bg-transparent border-0 pt-3 pb-2 d-flex justify-content-between align-items-center">
+      <div>
+        <h5 class="font-weight-bold text-dark mb-0" style="font-size: 16px;">
+          <i class="fas fa-table mr-2 text-primary"></i> Master Salary Structures Directory
+        </h5>
+        <small class="text-muted">Only approved structures for the effective payroll date are used during calculation.</small>
+      </div>
+      <div>
+        <input type="text" id="structureSearch" class="form-control form-control-sm" placeholder="Quick search employee..." style="border-radius: 6px; width: 220px;">
       </div>
     </div>
-  </section>
+
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0 text-nowrap" id="structuresTable" style="font-size: 13px;">
+          <thead style="background: #f8fafc; color: #475569; font-weight: 600;">
+            <tr>
+              <th class="pl-4">Employee</th>
+              <th>Department / Role</th>
+              <th>Bank Account</th>
+              <th>Structure Version</th>
+              <th>Effective From</th>
+              <th>Monthly CTC</th>
+              <th>Approval Status</th>
+              <th class="text-right pr-4">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php foreach ($structures as $s): ?>
+              <tr>
+                <td class="pl-4 font-weight-bold">
+                  <span class="text-dark"><?= esc($s['emp_name']) ?></span>
+                  <small class="d-block text-muted font-weight-bold"><?= esc($s['emp_id']) ?></small>
+                </td>
+                <td>
+                  <span class="badge badge-light border text-dark font-weight-normal"><?= esc($s['department_name'] ?? 'General') ?></span>
+                  <small class="d-block text-muted"><?= esc($s['designation_name'] ?? 'Staff') ?></small>
+                </td>
+                <td>
+                  <span class="font-weight-bold text-dark"><?= esc($s['bank_name'] ?: 'N/A') ?></span>
+                  <small class="d-block text-muted"><?= esc($s['bank_account_no'] ?: '') ?></small>
+                </td>
+                <td>
+                  <span class="badge badge-info px-2 py-1 font-weight-bold">
+                    v<?= (int)($s['structure_version'] ?? 1) ?>
+                  </span>
+                </td>
+                <td>
+                  <i class="far fa-calendar-check text-success mr-1"></i>
+                  <?= !empty($s['effective_from']) ? date('d M Y', strtotime($s['effective_from'])) : '&mdash;' ?>
+                </td>
+                <td class="font-weight-bold text-primary" style="font-size: 14px;">
+                  ₹<?= number_format((float)($s['monthly_ctc'] ?? 0), 2) ?>
+                </td>
+                <td>
+                  <?php if (($s['payroll_status'] ?? '') === 'APPROVED'): ?>
+                    <span class="badge badge-success px-2 py-1 font-weight-normal"><i class="fas fa-check-circle mr-1"></i> Approved</span>
+                  <?php else: ?>
+                    <span class="badge badge-warning text-dark px-2 py-1 font-weight-normal">Draft</span>
+                  <?php endif; ?>
+                </td>
+                <td class="text-right pr-4">
+                  <button type="button" class="btn btn-sm btn-outline-primary px-3 font-weight-bold btn-revise-struct" data-emp="<?= esc($s['emp_id']) ?>" style="border-radius: 6px;">
+                    <i class="fas fa-sliders-h mr-1"></i> Revise Salary
+                  </button>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
 </div>
 
-<!-- Modal: Configure Employee Salary Structure -->
-<div class="modal fade" id="configureStructureModal" tabindex="-1" role="dialog">
-  <div class="modal-dialog modal-lg" role="document">
-    <div class="modal-content">
-      <form action="<?= base_url('admin/payroll/save_structure') ?>" method="POST" id="structureForm">
-        <input type="hidden" name="emp_id" id="modal_emp_id">
-        <div class="modal-header bg-primary text-white">
-          <h5 class="modal-header-title font-weight-bold m-0"><i class="fas fa-sliders-h mr-2"></i> Configure Salary Structure for <span id="modal_emp_name_label">...</span></h5>
-          <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close"><span>&times;</span></button>
+<!-- Modal: Revise Salary Structure -->
+<div class="modal fade" id="reviseStructureModal" tabindex="-1" role="dialog" aria-labelledby="reviseStructureModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+    <div class="modal-content border-0 shadow" style="border-radius: 14px;">
+      <form method="post" action="<?= base_url('admin/payroll/save_structure') ?>">
+        <input type="hidden" name="emp_id" id="rev_emp_id">
+        <div class="modal-header border-0 pb-0">
+          <div>
+            <h5 class="modal-title font-weight-bold text-dark" id="rev_emp_title">Revise Employee Salary Structure</h5>
+            <small class="text-muted" id="rev_emp_subtitle">Employee ID</small>
+          </div>
+          <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
         </div>
-        <div class="modal-body">
-          <div class="row bg-light p-3 rounded mb-3">
-            <div class="col-md-6 form-group mb-0">
-              <label class="font-weight-bold">Monthly CTC (₹) <span class="text-danger">*</span></label>
-              <input type="number" step="0.01" name="ctc" id="modal_ctc" class="form-control font-weight-bold text-primary" required>
+        <div class="modal-body py-3">
+          <div class="form-row mb-3">
+            <div class="col-md-6">
+              <label class="font-weight-bold text-dark small">Monthly CTC (₹)</label>
+              <div class="input-group">
+                <div class="input-group-prepend"><span class="input-group-text bg-light font-weight-bold">₹</span></div>
+                <input type="number" step="0.01" name="monthly_ctc" id="rev_monthly_ctc" class="form-control font-weight-bold text-primary" required style="font-size: 16px;">
+              </div>
+              <small class="text-muted">Enter total monthly cost-to-company to auto-split.</small>
             </div>
-            <div class="col-md-6 form-group mb-0">
-              <label class="font-weight-bold">Effective From Date <span class="text-danger">*</span></label>
-              <input type="date" name="effective_from" id="modal_effective_from" class="form-control" value="<?= date('Y-m-01') ?>" required>
+            <div class="col-md-6">
+              <label class="font-weight-bold text-dark small">Effective From Date</label>
+              <input type="date" name="effective_from" id="rev_effective_from" class="form-control" required value="<?= date('Y-m-01') ?>">
+              <small class="text-muted">Effective date for new salary version.</small>
             </div>
           </div>
 
-          <h6 class="font-weight-bold text-secondary mb-2"><i class="fas fa-list-ol mr-1"></i> Salary Component Breakdown</h6>
-          <div class="table-responsive">
-            <table class="table table-bordered table-sm align-middle" id="modalComponentsTable">
-              <thead class="bg-light text-uppercase small text-secondary">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <h6 class="font-weight-bold text-dark m-0 small text-uppercase" style="letter-spacing: 0.5px;">Component Breakdown</h6>
+            <button type="button" class="btn btn-xs btn-outline-secondary" id="btnRecalculateSplit">
+              <i class="fas fa-magic mr-1"></i> Auto-Calculate 50/20/8/5/17 Split
+            </button>
+          </div>
+
+          <div class="table-responsive" style="max-height: 340px; overflow-y: auto;">
+            <table class="table table-sm table-bordered text-nowrap mb-0" style="font-size: 13px;">
+              <thead class="bg-light">
                 <tr>
-                  <th>Component</th>
                   <th>Type</th>
-                  <th>Calc Mode</th>
-                  <style>
-                    #modalComponentsTable th, #modalComponentsTable td { vertical-align: middle; }
-                  </style>
-                  <th style="width: 140px;">Value (% / Fixed)</th>
-                  <th style="width: 160px;" class="text-right">Monthly Amount (₹)</th>
+                  <th>Component</th>
+                  <th style="width: 140px;">Percentage (%)</th>
+                  <th style="width: 170px;" class="text-right">Monthly Amount (₹)</th>
                 </tr>
               </thead>
-              <tbody id="modalComponentsBody">
-                <!-- Dynamically injected by JS -->
+              <tbody id="structureComponentsBody">
+                <tr><td colspan="4" class="text-center py-3 text-muted">Loading components...</td></tr>
               </tbody>
-              <tfoot>
-                <tr class="bg-light font-weight-bold border-top">
-                  <td colspan="4" class="text-right text-dark">Direct Gross Cash Salary (A):</td>
-                  <td class="text-right text-success font-weight-bold" id="modal_total_gross" style="font-size: 0.95rem;">₹0.00</td>
-                </tr>
-                <tr class="bg-light">
-                  <td colspan="4" class="text-right text-muted">Employer Contributions (EPF/ESI/NPS in CTC):</td>
-                  <td class="text-right text-info font-weight-bold" id="modal_employer_contrib" style="font-size: 0.95rem;">₹0.00</td>
-                </tr>
-                <tr class="bg-light font-weight-bold text-primary">
-                  <td colspan="4" class="text-right">Total Calculated Monthly CTC:</td>
-                  <td class="text-right font-weight-bold" id="modal_total_ctc_display" style="font-size: 1rem;">₹0.00</td>
-                </tr>
-                <tr class="bg-light font-weight-bold">
-                  <td colspan="4" class="text-right text-danger">Total Employee Deductions (B):</td>
-                  <td class="text-right text-danger font-weight-bold" id="modal_total_deductions" style="font-size: 0.95rem;">₹0.00</td>
-                </tr>
-                <tr class="bg-success text-white font-weight-bold" style="font-size: 1.05rem;">
-                  <td colspan="4" class="text-right">Estimated Net Monthly In-Hand Salary (A - B):</td>
-                  <td class="text-right font-weight-bold" id="modal_net_inhand">₹0.00</td>
-                </tr>
-              </tfoot>
             </table>
           </div>
         </div>
-        <div class="modal-footer bg-light">
-          <button type="button" class="btn btn-secondary" data-dismiss="modal">Cancel</button>
-          <button type="submit" class="btn btn-primary font-weight-bold"><i class="fas fa-save mr-1"></i> Save Salary Structure</button>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-light border px-4" data-dismiss="modal" style="border-radius: 8px;">Cancel</button>
+          <button type="submit" class="btn btn-primary px-4 font-weight-bold shadow-sm" style="border-radius: 8px;">
+            <i class="fas fa-check mr-1"></i> Save & Approve Revision
+          </button>
         </div>
       </form>
     </div>
   </div>
 </div>
 
-<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
-
 <script>
-$(document).ready(function() {
-  const searchInput = document.getElementById('empStructureSearch');
-  if (searchInput) {
-    searchInput.addEventListener('keyup', function() {
-      const value = this.value.toLowerCase();
-      const rows = document.querySelectorAll('#structuresTable tbody tr');
-      rows.forEach(r => {
-        const text = r.innerText.toLowerCase();
-        r.style.display = text.includes(value) ? '' : 'none';
-      });
+document.addEventListener('DOMContentLoaded', function() {
+  // Live search
+  $('#structureSearch').on('keyup', function() {
+    var val = $(this).val().toLowerCase();
+    $('#structuresTable tbody tr').filter(function() {
+      $(this).toggle($(this).text().toLowerCase().indexOf(val) > -1);
     });
-  }
-
-  const defaultFormula = {
-    'BASIC': { calc: 'PERCENTAGE', val: 50 },
-    'HRA': { calc: 'PERCENTAGE', val: 20 },
-    'MEDICAL': { calc: 'PERCENTAGE', val: 5 },
-    'CONVEYANCE': { calc: 'PERCENTAGE', val: 8 },
-    'OTHER_EARNINGS': { calc: 'PERCENTAGE', val: 10.5 },
-    'EPF_EMPLOYER': { calc: 'PERCENTAGE', val: 6.5 },
-    'EPF_EMPLOYEE': { calc: 'PERCENTAGE', val: 12 },
-    'ESI_EMPLOYEE': { calc: 'PERCENTAGE', val: 0.75 },
-    'ESI_EMPLOYER': { calc: 'PERCENTAGE', val: 3.25 },
-    'PT': { calc: 'SLAB', val: 0 },
-  };
-
-  $(document).on('click', '.btn-configure-structure', function() {
-    const empId = $(this).data('empid');
-    $('#configureStructureModal').modal('show');
-    
-    const tbody = document.getElementById('modalComponentsBody');
-    tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4"><i class="fas fa-spinner fa-spin fa-2x text-primary"></i><p class="mt-2 text-muted">Loading employee structure...</p></td></tr>';
-
-    fetch('<?= base_url('admin/payroll/get_emp_structure/') ?>' + empId)
-      .then(res => res.json())
-      .then(data => {
-        if (data.status === 'success') {
-          document.getElementById('modal_emp_id').value = data.emp_id;
-          document.getElementById('modal_emp_name_label').innerText = `${data.emp_name} (${data.emp_id})`;
-          document.getElementById('modal_ctc').value = data.ctc || 25000;
-          if (data.effective_from) {
-            document.getElementById('modal_effective_from').value = data.effective_from;
-          }
-
-          const existingMap = {};
-          if (data.structures && data.structures.length > 0) {
-            data.structures.forEach(s => {
-              existingMap[s.component_code] = s;
-            });
-          }
-
-          let html = '';
-          (data.components || []).forEach(comp => {
-            const code = comp.component_code;
-            const existing = existingMap[code];
-
-            let calcType = comp.calculation_type || 'FIXED';
-            let val = comp.value || 0;
-            let amt = 0;
-
-            if (existing) {
-              calcType = existing.calculation_type;
-              val = parseFloat(existing.value || 0);
-              amt = parseFloat(existing.amount || 0);
-            } else if (defaultFormula[code]) {
-              calcType = defaultFormula[code].calc;
-              val = defaultFormula[code].val;
-              amt = (data.ctc * val) / 100;
-            }
-
-            let badgeClass = 'badge-success';
-            if (comp.component_type === 'DEDUCTION') badgeClass = 'badge-danger';
-            else if (comp.component_type === 'STATUTORY') badgeClass = 'badge-info';
-
-            html += `
-              <tr data-code="${code}" data-compid="${comp.id}" data-type="${comp.component_type}">
-                <td class="font-weight-bold text-dark">
-                  ${comp.component_name} <br><small class="text-muted"><code>${code}</code></small>
-                </td>
-                <td><span class="badge ${badgeClass}">${comp.component_type}</span></td>
-                <td>
-                  <select name="components[${comp.id}][calculation_type]" class="form-control form-control-sm comp-calc-type">
-                    <option value="PERCENTAGE" ${calcType==='PERCENTAGE'?'selected':''}>PERCENTAGE (%)</option>
-                    <option value="FIXED" ${calcType==='FIXED'?'selected':''}>FIXED (₹)</option>
-                    <option value="SLAB" ${calcType==='SLAB'?'selected':''}>SLAB</option>
-                  </select>
-                </td>
-                <td>
-                  <input type="number" step="0.01" name="components[${comp.id}][value]" class="form-control form-control-sm comp-val-input" value="${val}">
-                </td>
-                <td>
-                  <input type="number" step="0.01" name="components[${comp.id}][amount]" class="form-control form-control-sm text-right font-weight-bold comp-amt-input" value="${amt.toFixed(2)}">
-                </td>
-              </tr>
-            `;
-          });
-
-          tbody.innerHTML = html;
-          recalculateModalAmounts();
-          attachModalCalcEvents();
-        }
-      });
   });
 
-  function attachModalCalcEvents() {
-    $('#modal_ctc').off('input').on('input', function(e) {
-      recalculateModalAmounts(e.target);
-    });
+  var masterComps = [];
 
-    $(document).off('input change', '.comp-val-input, .comp-calc-type, .comp-amt-input').on('input change', '.comp-val-input, .comp-calc-type, .comp-amt-input', function(e) {
-      recalculateModalAmounts(e.target);
-    });
-  }
+  $('.btn-revise-struct').on('click', function() {
+    var empId = $(this).data('emp');
+    $('#rev_emp_id').val(empId);
+    $('#rev_emp_title').text('Revise Salary Structure: ' + empId);
+    $('#rev_emp_subtitle').text('Fetching current components...');
+    $('#structureComponentsBody').html('<tr><td colspan="4" class="text-center py-3 text-muted"><i class="fas fa-spinner fa-spin mr-1"></i> Loading structure...</td></tr>');
+    $('#reviseStructureModal').modal('show');
 
-  function recalculateModalAmounts(targetEl = null) {
-    const ctc = parseFloat($('#modal_ctc').val()) || 0;
+    $.ajax({
+      url: '<?= base_url("admin/payroll/get_structure/") ?>' + empId,
+      type: 'GET',
+      dataType: 'json',
+      success: function(resp) {
+        if (resp.status === 'SUCCESS') {
+          masterComps = resp.master;
+          var s = resp.data.structure;
+          var assigned = resp.data.components;
 
-    // Handle targeted row updates if user explicitly edited an input
-    if (targetEl) {
-      const $target = $(targetEl);
-      const $row = $target.closest('tr');
-      if ($row.length) {
-        const calcType = $row.find('.comp-calc-type').val();
-        const $valInput = $row.find('.comp-val-input');
-        const $amtInput = $row.find('.comp-amt-input');
-
-        if ($target.hasClass('comp-amt-input')) {
-          const amt = parseFloat($target.val()) || 0;
-          if (calcType === 'PERCENTAGE') {
-            const calculatedPct = ctc > 0 ? (amt / ctc) * 100 : 0;
-            $valInput.val(calculatedPct.toFixed(2));
-          } else {
-            $valInput.val(amt.toFixed(2));
+          $('#rev_emp_title').text('Revise Salary: ' + (s.emp_name || empId));
+          $('#rev_emp_subtitle').text(empId + ' &bull; ' + (s.department_name || '') + ' &bull; Current CTC: ₹' + parseFloat(s.monthly_ctc).toFixed(2));
+          $('#rev_monthly_ctc').val(parseFloat(s.monthly_ctc).toFixed(2));
+          if (s.effective_from) {
+            $('#rev_effective_from').val(s.effective_from);
           }
-        } else if ($target.hasClass('comp-val-input')) {
-          const val = parseFloat($target.val()) || 0;
-          if (calcType === 'PERCENTAGE') {
-            const calculatedAmt = (ctc * val) / 100;
-            $amtInput.val(calculatedAmt.toFixed(2));
-          } else {
-            $amtInput.val(val.toFixed(2));
-          }
-        } else if ($target.hasClass('comp-calc-type')) {
-          const val = parseFloat($valInput.val()) || 0;
-          const amt = parseFloat($amtInput.val()) || 0;
-          if (calcType === 'PERCENTAGE') {
-            const calculatedPct = ctc > 0 ? (amt / ctc) * 100 : 0;
-            $valInput.val(calculatedPct.toFixed(2));
-          } else {
-            $valInput.val(amt.toFixed(2));
-          }
+
+          renderComponentRows(assigned);
         }
       }
+    });
+  });
+
+  function renderComponentRows(assigned) {
+    var assignedMap = {};
+    if (assigned && assigned.length > 0) {
+      assigned.forEach(function(c) {
+        assignedMap[c.component_id] = c;
+      });
     }
 
-    let totalGrossCash = 0;
-    let basicAmt = 0;
+    var html = '';
+    masterComps.forEach(function(m) {
+      var exist = assignedMap[m.component_id];
+      var amt = exist ? parseFloat(exist.monthly_amount).toFixed(2) : '0.00';
+      var pct = exist && exist.percentage_value !== null ? parseFloat(exist.percentage_value).toFixed(2) : (m.percentage_value !== null ? parseFloat(m.percentage_value).toFixed(2) : '');
 
-    // First pass: Calculate Direct Cash Earnings
-    $('#modalComponentsBody tr').each(function() {
-      const type = $(this).attr('data-type');
-      const code = $(this).attr('data-code');
-      if (type !== 'EARNING') return;
+      var typeBadge = (m.component_type === 'EARNING') ? '<span class="badge badge-success">Earning</span>' :
+                      ((m.component_type === 'DEDUCTION') ? '<span class="badge badge-danger">Deduction</span>' :
+                      '<span class="badge badge-info">Employer</span>');
 
-      const calcType = $(this).find('.comp-calc-type').val();
-      const $valInput = $(this).find('.comp-val-input');
-      const $amtInput = $(this).find('.comp-amt-input');
-      const val = parseFloat($valInput.val()) || 0;
-
-      let amt = parseFloat($amtInput.val()) || 0;
-
-      // If user edited Monthly CTC field, update percentage-based earning amounts
-      if (targetEl && targetEl.id === 'modal_ctc' && calcType === 'PERCENTAGE') {
-        amt = (ctc * val) / 100;
-        $amtInput.val(amt.toFixed(2));
-      }
-
-      totalGrossCash += amt;
-      if (code === 'BASIC') basicAmt = amt;
+      html += '<tr>' +
+        '<td>' + typeBadge + '</td>' +
+        '<td><strong>' + m.component_name + '</strong> <small class="text-muted">(' + m.component_code + ')</small></td>' +
+        '<td><input type="number" step="0.01" class="form-control form-control-sm comp-pct" name="components[' + m.component_id + '][percentage_value]" value="' + pct + '" placeholder="%"></td>' +
+        '<td><input type="number" step="0.01" class="form-control form-control-sm text-right comp-amt font-weight-bold" name="components[' + m.component_id + '][monthly_amount]" value="' + amt + '" data-code="' + m.component_code + '"></td>' +
+        '</tr>';
     });
-
-    // Second pass: Calculate Statutory Employer Contributions & Employee Deductions
-    let totalEmployerContrib = 0;
-    let totalDeductions = 0;
-
-    $('#modalComponentsBody tr').each(function() {
-      const type = $(this).attr('data-type');
-      const code = $(this).attr('data-code');
-      if (type === 'EARNING') return;
-
-      const calcType = $(this).find('.comp-calc-type').val();
-      const $valInput = $(this).find('.comp-val-input');
-      const $amtInput = $(this).find('.comp-amt-input');
-      const val = parseFloat($valInput.val()) || 0;
-      let amt = parseFloat($amtInput.val()) || 0;
-
-      const isDirectlyEdited = targetEl && $(targetEl).closest('tr').is($(this)) && $(targetEl).hasClass('comp-amt-input');
-
-      if (!isDirectlyEdited) {
-        if (type === 'STATUTORY') {
-          if (code === 'EPF_EMPLOYER') {
-            const epfBase = Math.min(basicAmt, 15000);
-            amt = calcType === 'PERCENTAGE' ? (epfBase * (val || 12)) / 100 : (val || amt);
-            $amtInput.val(amt.toFixed(2));
-          } else if (code === 'ESI_EMPLOYER') {
-            amt = totalGrossCash <= 21000 ? (totalGrossCash * 0.0325) : 0;
-            $amtInput.val(amt.toFixed(2));
-          } else if (calcType === 'PERCENTAGE') {
-            amt = (ctc * val) / 100;
-            $amtInput.val(amt.toFixed(2));
-          }
-        } else if (type === 'DEDUCTION') {
-          if (code === 'EPF_EMPLOYEE') {
-            const epfBase = Math.min(basicAmt, 15000);
-            amt = calcType === 'PERCENTAGE' ? (epfBase * (val || 12)) / 100 : (val || amt);
-            $amtInput.val(amt.toFixed(2));
-          } else if (code === 'ESI_EMPLOYEE') {
-            amt = totalGrossCash <= 21000 ? (totalGrossCash * 0.0075) : 0;
-            $amtInput.val(amt.toFixed(2));
-          } else if (code === 'PT') {
-            if (calcType === 'SLAB') {
-              if (totalGrossCash > 20000) amt = 200;
-              else if (totalGrossCash >= 15001) amt = 150;
-              else amt = 0;
-            } else if (calcType === 'PERCENTAGE') {
-              amt = (totalGrossCash * val) / 100;
-            }
-            $amtInput.val(amt.toFixed(2));
-          } else if (calcType === 'PERCENTAGE') {
-            amt = (totalGrossCash * val) / 100;
-            $amtInput.val(amt.toFixed(2));
-          }
-        }
-      }
-
-      if (type === 'STATUTORY') totalEmployerContrib += amt;
-      else if (type === 'DEDUCTION') totalDeductions += amt;
-    });
-
-    const calculatedTotalCTC = totalGrossCash + totalEmployerContrib;
-    const netInHand = Math.max(0, totalGrossCash - totalDeductions);
-
-    $('#modal_total_gross').text('₹' + totalGrossCash.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-    $('#modal_employer_contrib').text('₹' + totalEmployerContrib.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-    $('#modal_total_ctc_display').text('₹' + calculatedTotalCTC.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-    $('#modal_total_deductions').text('₹' + totalDeductions.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
-    $('#modal_net_inhand').text('₹' + netInHand.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+    $('#structureComponentsBody').html(html);
   }
+
+  $('#btnRecalculateSplit').on('click', function() {
+    var ctc = parseFloat($('#rev_monthly_ctc').val()) || 0;
+    if (ctc <= 0) {
+      alert('Please enter a valid monthly CTC amount first.');
+      return;
+    }
+
+    var basic = Math.round(ctc * 0.50 * 100) / 100;
+    var hra   = Math.round(ctc * 0.20 * 100) / 100;
+    var conv  = Math.round(ctc * 0.08 * 100) / 100;
+    var med   = Math.round(ctc * 0.05 * 100) / 100;
+    var spl   = Math.max(0, Math.round((ctc - (basic + hra + conv + med)) * 100) / 100);
+
+    var pfEmp = Math.min(Math.round(basic * 0.12 * 100) / 100, 1800.00);
+    var esiEmp = (ctc <= 21000) ? Math.round(ctc * 0.0075 * 100) / 100 : 0.00;
+    var pt    = (ctc >= 20000) ? 200.00 : ((ctc >= 15000) ? 150.00 : 0.00);
+
+    var pfEmplr = Math.min(Math.round(basic * 0.12 * 100) / 100, 1800.00);
+    var esiEmplr = (ctc <= 21000) ? Math.round(ctc * 0.0325 * 100) / 100 : 0.00;
+
+    $('.comp-amt').each(function() {
+      var code = $(this).data('code');
+      if (code === 'BASIC') $(this).val(basic.toFixed(2));
+      else if (code === 'HRA') $(this).val(hra.toFixed(2));
+      else if (code === 'CONVEYANCE') $(this).val(conv.toFixed(2));
+      else if (code === 'MEDICAL') $(this).val(med.toFixed(2));
+      else if (code === 'SPECIAL_ALLOWANCE') $(this).val(spl.toFixed(2));
+      else if (code === 'PF_EMPLOYEE') $(this).val(pfEmp.toFixed(2));
+      else if (code === 'ESI_EMPLOYEE') $(this).val(esiEmp.toFixed(2));
+      else if (code === 'PROF_TAX') $(this).val(pt.toFixed(2));
+      else if (code === 'PF_EMPLOYER') $(this).val(pfEmplr.toFixed(2));
+      else if (code === 'ESI_EMPLOYER') $(this).val(esiEmplr.toFixed(2));
+    });
+  });
 });
 </script>

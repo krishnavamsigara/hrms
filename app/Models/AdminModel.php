@@ -26,12 +26,22 @@ class AdminModel extends Model
     ) {
         $placeholders = implode(',', array_fill(0, count($params), '?'));
 
-        $sql = "CALL {$procedureName}({$placeholders})";
+        $sql = !empty($params) ? "CALL {$procedureName}({$placeholders})" : "CALL {$procedureName}()";
 
         $query = $this->db->query($sql, $params);
 
+        if ($this->db->connID instanceof \mysqli) {
+            try {
+                while (@mysqli_more_results($this->db->connID) && @mysqli_next_result($this->db->connID)) {
+                    // Drain extra result sets left by MySQL stored procedure CALL
+                }
+            } catch (\Throwable $ex) {
+                // Suppress PHP 8.1+ strict mysqli exception
+            }
+        }
+
         if ($isQuery) {
-            return $query->getResultArray();
+            return $query ? $query->getResultArray() : [];
         }
 
         return $this->db->affectedRows() > 0;
@@ -299,8 +309,54 @@ class AdminModel extends Model
 
     public function get_attendance_overview(string $emp_id, string $startDate, string $endDate, string $searchParam): array
     {
-        $sql = "CALL get_attendance_overview_data(?, ?, ?, ?)";
-        return $this->db->query($sql, [$emp_id, $startDate, $endDate, $searchParam])->getResultArray();
+        return $this->callProcedure('get_attendance_overview_data', [$emp_id, $startDate, $endDate, $searchParam]);
+    }
+
+    public function get_active_users_dropdown(): array
+    {
+        return $this->callProcedure('getactiveUsersfordropdown', []);
+    }
+
+    public function get_user_details(string $emp_id): array
+    {
+        $res = $this->callProcedure('get_user_details', [$emp_id]);
+        return (!empty($res) && isset($res[0])) ? $res[0] : ($res ?: []);
+    }
+
+    public function get_payroll_attendance_summary_stats(int $month, int $year): array
+    {
+        $res = $this->callProcedure('sp_get_payroll_attendance_summary_stats', [$month, $year]);
+        return (!empty($res) && isset($res[0])) ? $res[0] : [];
+    }
+
+    public function get_attendance_punch_stats(string $startDate, string $endDate): array
+    {
+        $res = $this->callProcedure('sp_get_attendance_punch_stats', [$startDate, $endDate]);
+        return (!empty($res) && isset($res[0])) ? $res[0] : [
+            'total_punches'       => 0,
+            'active_punched_emps' => 0,
+            'present_count'       => 0,
+            'wfh_count'           => 0,
+            'leave_count'         => 0,
+            'absent_count'        => 0
+        ];
+    }
+
+    public function get_annual_attendance_matrix(int $year, int $cycleStartDay, string $startFilter, string $endFilter): array
+    {
+        return $this->callProcedure('sp_get_annual_attendance_matrix', [$year, $cycleStartDay, $startFilter, $endFilter]);
+    }
+
+    public function get_annual_payroll_summary(int $year): array
+    {
+        return $this->callProcedure('sp_get_annual_payroll_summary', [$year]);
+    }
+
+    public function get_raw_attendance_punch_counts(string $startDate, string $endDate): array
+    {
+        $res = $this->callProcedure('sp_get_raw_attendance_punch_counts', [$startDate, $endDate]);
+        return (!empty($res) && isset($res[0])) ? $res[0] : ['raw_punches' => 0, 'raw_emps' => 0];
     }
 }
+
 
