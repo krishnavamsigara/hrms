@@ -150,6 +150,7 @@
   <div class="modal-dialog modal-dialog-centered" role="document">
     <div class="modal-content border-0 shadow" style="border-radius: 14px;">
       <form method="post" action="<?= base_url('admin/payroll/save_component') ?>">
+        <?= csrf_field() ?>
         <div class="modal-header border-0 pb-0">
           <h5 class="modal-title font-weight-bold text-dark" id="addComponentModalLabel">
             <i class="fas fa-plus-circle text-primary mr-2"></i> Add Salary Component
@@ -157,6 +158,10 @@
           <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">&times;</span></button>
         </div>
         <div class="modal-body py-3">
+          <div class="alert alert-info py-2 px-3 small border-0 mb-3" style="border-radius: 8px; background: #eff6ff; color: #1e40af; border-left: 4px solid #3b82f6 !important;">
+            <i class="fas fa-magic mr-1"></i> <strong>Auto-Assignment to All Employees:</strong> Adding this new component will automatically attach it in <strong>Active</strong> state across all active employee salary structures. You can customize individual amounts anytime on the <a href="<?= base_url('admin/payroll/structures') ?>" class="text-primary font-weight-bold text-underline">Salary Structures</a> page.
+          </div>
+
           <div class="form-row">
             <div class="form-group col-md-6">
               <label class="font-weight-bold text-dark small">Component Code</label>
@@ -189,7 +194,7 @@
           </div>
 
           <div class="form-row">
-            <div class="form-group col-md-6">
+            <div class="form-group col-md-4">
               <label class="font-weight-bold text-dark small">Percentage Base</label>
               <select name="percentage_base" class="form-control" style="border-radius: 8px;">
                 <option value="NONE">NONE</option>
@@ -198,9 +203,13 @@
                 <option value="CTC">CTC</option>
               </select>
             </div>
-            <div class="form-group col-md-6">
-              <label class="font-weight-bold text-dark small">Percentage Value (%)</label>
+            <div class="form-group col-md-4">
+              <label class="font-weight-bold text-dark small">Percentage (%)</label>
               <input type="number" step="0.0001" name="percentage_value" class="form-control" placeholder="e.g. 50.00" style="border-radius: 8px;">
+            </div>
+            <div class="form-group col-md-4">
+              <label class="font-weight-bold text-dark small">Default Amount (₹)</label>
+              <input type="number" step="0.01" name="default_monthly_amount" class="form-control" placeholder="0.00" style="border-radius: 8px;">
             </div>
           </div>
 
@@ -233,6 +242,7 @@
   <div class="modal-dialog modal-dialog-centered" role="document">
     <div class="modal-content border-0 shadow" style="border-radius: 14px;">
       <form method="post" action="<?= base_url('admin/payroll/save_component') ?>">
+        <?= csrf_field() ?>
         <input type="hidden" name="component_id" id="edit_id">
         <div class="modal-header border-0 pb-0">
           <h5 class="modal-title font-weight-bold text-dark" id="editComponentModalLabel">
@@ -312,9 +322,13 @@
   </div>
 </div>
 
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.bundle.min.js"></script>
+
 <script>
-document.addEventListener('DOMContentLoaded', function() {
-  $('.btn-edit-comp').on('click', function() {
+$(document).ready(function() {
+  $(document).on('click', '.btn-edit-comp', function(e) {
+    e.preventDefault();
     $('#edit_id').val($(this).data('id'));
     $('#edit_code').val($(this).data('code'));
     $('#edit_name').val($(this).data('name'));

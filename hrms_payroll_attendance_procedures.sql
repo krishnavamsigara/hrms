@@ -52,20 +52,26 @@ CREATE PROCEDURE `sp_get_annual_attendance_matrix`(
 )
 BEGIN
     SELECT 
-        CASE 
-            WHEN DAY(attendance_date) >= p_cycle_start_day THEN 
-                CASE WHEN MONTH(attendance_date) = 12 THEN 1 ELSE MONTH(attendance_date) + 1 END
-            ELSE MONTH(attendance_date)
-        END AS p_month,
-        CASE 
-            WHEN DAY(attendance_date) >= p_cycle_start_day AND MONTH(attendance_date) = 12 THEN YEAR(attendance_date) + 1
-            ELSE YEAR(attendance_date)
-        END AS p_year,
-        COUNT(*) as raw_count,
-        COUNT(DISTINCT emp_id) as emp_count
-    FROM attendance
-    WHERE attendance_date >= p_start_filter AND attendance_date <= p_end_filter
-    GROUP BY p_year, p_month;
+        t.calc_month AS p_month,
+        t.calc_year AS p_year,
+        COUNT(*) AS raw_count,
+        COUNT(DISTINCT t.emp_id) AS emp_count
+    FROM (
+        SELECT 
+            emp_id,
+            CASE 
+                WHEN DAY(attendance_date) >= p_cycle_start_day THEN 
+                    CASE WHEN MONTH(attendance_date) = 12 THEN 1 ELSE MONTH(attendance_date) + 1 END
+                ELSE MONTH(attendance_date)
+            END AS calc_month,
+            CASE 
+                WHEN DAY(attendance_date) >= p_cycle_start_day AND MONTH(attendance_date) = 12 THEN YEAR(attendance_date) + 1
+                ELSE YEAR(attendance_date)
+            END AS calc_year
+        FROM attendance
+        WHERE attendance_date >= p_start_filter AND attendance_date <= p_end_filter
+    ) t
+    GROUP BY t.calc_year, t.calc_month;
 END$$
 
 -- 4. sp_get_annual_payroll_summary

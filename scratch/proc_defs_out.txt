@@ -1,0 +1,477 @@
+====================================================
+PROCEDURE: sp_check_attendance_finalized
+====================================================
+CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_check_attendance_finalized`(
+    IN p_month INT,
+    IN p_year INT
+)
+BEGIN
+    SELECT 
+        COUNT(*) as cnt,
+        MAX(CASE WHEN UPPER(TRIM(is_finalized)) = 'Y' THEN 1 ELSE 0 END) as is_finalized
+    FROM payroll_attendance_summary
+    WHERE payroll_month = p_month
+      AND payroll_year = p_year;
+END
+
+====================================================
+PROCEDURE: sp_create_payroll_cycle
+====================================================
+CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_create_payroll_cycle`(
+    IN p_payroll_code VARCHAR(100),
+    IN p_period_start DATE,
+    IN p_period_end DATE,
+    IN p_pay_date DATE,
+    IN p_created_by VARCHAR(100)
+)
+BEGIN
+    INSERT INTO payroll_cycles (payroll_code, period_start, period_end, pay_date, status, created_by, created_at, updated_at)
+    VALUES (p_payroll_code, p_period_start, p_period_end, p_pay_date, 'DRAFT', p_created_by, NOW(), NOW());
+    
+    SELECT LAST_INSERT_ID() AS cycle_id;
+END
+
+====================================================
+PROCEDURE: sp_create_payroll_run
+====================================================
+CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_create_payroll_run`(
+    IN p_payroll_month INT,
+    IN p_payroll_year INT,
+    IN p_salary_day_basis VARCHAR(20),
+    IN p_admin_emp_id VARCHAR(20),
+    OUT p_run_id BIGINT,
+    OUT p_status VARCHAR(10),
+    OUT p_message VARCHAR(255)
+)
+BEGIN
+    DECLARE v_start_day INT DEFAULT 25;
+    DECLARE v_end_day INT DEFAULT 24;
+    DECLARE v_prev_month INT;
+    DECLARE v_prev_year INT;
+    DECLARE v_period_start DATE;
+    DECLARE v_period_end DATE;
+    DECLARE v_existing_id BIGINT;
+    DECLARE v_day_basis VARCHAR(20) DEFAULT 'FIXED_30';
+
+    IF p_payroll_month < 1 OR p_payroll_month > 12 THEN
+        SET p_run_id = 0;
+        SET p_status = 'ERROR';
+        SET p_message = 'Invalid payroll month (must be 1-12)';
+    ELSEIF p_payroll_year < 2000 THEN
+        SET p_run_id = 0;
+        SET p_status = 'ERROR';
+        SET p_message = 'Invalid payroll year';
+    ELSE
+        SELECT IFNULL(payroll_cycle_start_day, 25), IFNULL(payroll_cycle_end_day, 24)
+        INTO v_start_day, v_end_day
+        FROM company_settings
+        LIMIT 1;
+
+        IF v_start_day > v_end_day THEN
+            IF p_payroll_month = 1 THEN
+                SET v_prev_month = 12;
+                SET v_prev_year = p_payroll_year - 1;
+            ELSE
+                SET v_prev_month = p_payroll_month - 1;
+                SET v_prev_year = p_payroll_year;
+            END IF;
+            SET v_period_start = STR_TO_DATE(CONCAT(v_prev_year, '-', LPAD(v_prev_month, 2, '0'), '-', LPAD(v_start_day, 2, '0')), '%Y-%m-%d');
+            SET v_period_end   = STR_TO_DATE(CONCAT(p_payroll_year, '-', LPAD(p_payroll_month, 2, '0'), '-', LPAD(v_end_day, 2, '0')), '%Y-%m-%d');
+        ELSE
+            SET v_period_start = STR_TO_DATE(CONCAT(p_payroll_year, '-', LPAD(p_payroll_month, 2, '0'), '-', LPAD(v_start_day, 2, '0')), '%Y-%m-%d');
+            SET v_period_end   = STR_TO_DATE(CONCAT(p_payroll_year, '-', LPAD(p_payroll_month, 2, '0'), '-', LPAD(v_end_day, 2, '0')), '%Y-%m-%d');
+        END IF;
+
+        IF p_salary_day_basis IS NOT NULL AND p_salary_day_basis != '' THEN
+            SET v_day_basis = p_salary_day_basis;
+        END IF;
+
+        SELECT payroll_run_id INTO v_existing_id
+        FROM payroll_run
+        WHERE payroll_month = p_payroll_month AND payroll_year = p_payroll_year
+        LIMIT 1;
+
+        IF v_existing_id IS NOT NULL THEN
+            SET p_run_id = v_existing_id;
+            SET p_status = 'EXISTING';
+            SET p_message = CONCAT('Payroll run already exists for this period (Run ID: ', v_existing_id, ')');
+        ELSE
+            INSERT INTO payroll_run (
+                payroll_month, payroll_year, period_start, period_end,
+                salary_day_basis, payroll_status, employee_count,
+                created_by, created_at
+            ) VALUES (
+                p_payroll_month, p_payroll_year, v_period_start, v_period_end,
+                v_day_basis, 'DRAFT', 0,
+                p_admin_emp_id, NOW()
+            );
+
+            SET p_run_id = LAST_INSERT_ID();
+            SET p_status = 'SUCCESS';
+            SET p_message = 'Payroll run created successfully';
+        END IF;
+    END IF;
+END
+
+====================================================
+PROCEDURE: sp_get_payroll_export_data
+====================================================
+CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_get_payroll_export_data`(
+    IN p_cycle_id INT,
+    IN p_month VARCHAR(45),
+    IN p_year VARCHAR(45)
+)
+BEGIN
+    DECLARE v_count INT DEFAULT 0;
+    
+    SELECT COUNT(*) INTO v_count 
+    FROM employee_salary es
+    WHERE LOWER(es.month) = LOWER(p_month)
+      AND es.year = p_year;
+      
+    IF v_count > 0 THEN
+        SELECT 
+            es.*, 
+            IFNULL(ud.bank_account_no, '') as bank_account_no, 
+            IFNULL(ud.bank_name, '') as bank_name, 
+            IFNULL(ud.ifsc, '') as ifsc
+        FROM employee_salary es
+        LEFT JOIN user_details ud ON ud.emp_id = es.EMP_ID
+        WHERE LOWER(es.month) = LOWER(p_month)
+          AND es.year = p_year
+        ORDER BY es.EMP_ID ASC;
+    ELSE
+        SELECT 
+            pe.emp_id as EMP_ID,
+            pe.employee_name as name,
+            pe.salary_basis as salary,
+            pe.lop_days as leaves,
+            30 as Working_days,
+            pe.leave_deduction as Leave_salary_deduction,
+            pe.other_earnings,
+            pe.ctc1,
+            pe.gross_salary as gross,
+            pe.total_deductions,
+            pe.net_salary as net_pay,
+            IFNULL(ud.bank_account_no, '') as bank_account_no, 
+            IFNULL(ud.bank_name, '') as bank_name, 
+            IFNULL(ud.ifsc, '') as ifsc,
+            IFNULL(es.ctc1, 0) as legacy_ctc
+        FROM payroll_employees pe
+        LEFT JOIN user_details ud ON ud.emp_id = pe.emp_id
+        LEFT JOIN (
+            SELECT s1.* 
+            FROM employee_salary s1
+            INNER JOIN (
+                SELECT EMP_ID, MAX(id) as max_id 
+                FROM employee_salary 
+                GROUP BY EMP_ID
+            ) s2 ON s1.id = s2.max_id
+        ) es ON es.EMP_ID = pe.emp_id
+        WHERE pe.payroll_cycle_id = p_cycle_id
+        ORDER BY pe.emp_id ASC;
+    END IF;
+END
+
+====================================================
+PROCEDURE: sp_get_payroll_cycle_employees
+====================================================
+CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_get_payroll_cycle_employees`(
+    IN p_cycle_id INT
+)
+BEGIN
+    SELECT 
+        pe.*, 
+        IFNULL(dm.department_name, 'General') as department, 
+        IFNULL(dsm.designation_name, 'Employee') as designation,
+        IFNULL(ud.email, '') as email,
+        IFNULL(ud.mobile, '') as mobile,
+        IFNULL(ud.bank_account_no, '') as bank_account_no,
+        IFNULL(ud.bank_name, '') as bank_name,
+        IFNULL(ud.ifsc, '') as ifsc,
+        IFNULL(es.`basic @ 50%`, ROUND(pe.salary_basis * 0.50, 2)) as basic_calc,
+        IFNULL(es.`hra @ 20%`, ROUND(pe.salary_basis * 0.20, 2)) as hra_calc,
+        IFNULL(es.`medical @ 5%`, ROUND(pe.salary_basis * 0.05, 2)) as medical_calc,
+        IFNULL(es.`conveyance @ 8%`, ROUND(pe.salary_basis * 0.08, 2)) as conveyance_calc,
+        IFNULL(es.`others @ 17%`, 0) as others_calc,
+        IFNULL(es.NPS, 0) as employer_nps,
+        IFNULL(es.pf_employer_contribution, LEAST(ROUND(ROUND(pe.salary_basis * 0.50, 2) * 0.12, 2), 1800.00)) as pf_employer,
+        IFNULL(es.admin_charges, 75.00) as admin_charges,
+        IFNULL(es.esi_employer_contribution, CASE WHEN pe.gross_salary <= 21000 THEN ROUND(pe.gross_salary * 0.0325, 2) ELSE 0 END) as esi_employer,
+        IFNULL(es.pt, 200.00) as pt_calc,
+        IFNULL(es.pf_employee_contribution, LEAST(ROUND(ROUND(pe.salary_basis * 0.50, 2) * 0.12, 2), 1800.00)) as pf_employee,
+        IFNULL(es.esi_employee_contribution, CASE WHEN pe.gross_salary <= 21000 THEN ROUND(pe.gross_salary * 0.0075, 2) ELSE 0 END) as esi_employee,
+        IFNULL(es.`advances/ other_deductions`, 0) as advances_deduction,
+        IFNULL(es.tds, 0) as tds_calc,
+        IFNULL(eadv.adv_amt, 0) as advance_amount,
+        IFNULL(eadv.bal_amt, 0) as bal_advance
+    FROM payroll_employees pe
+    LEFT JOIN user_details ud ON ud.emp_id = pe.emp_id
+    LEFT JOIN department_master dm ON dm.department_id = ud.department
+    LEFT JOIN designation_master dsm ON dsm.designation_id = ud.designation
+    LEFT JOIN (
+        SELECT s1.* 
+        FROM employee_salary s1
+        INNER JOIN (
+            SELECT EMP_ID, MAX(id) as max_id 
+            FROM employee_salary 
+            GROUP BY EMP_ID
+        ) s2 ON s1.id = s2.max_id
+    ) es ON es.EMP_ID = pe.emp_id
+    LEFT JOIN (
+        SELECT emp_id, SUM(advance_amount) as adv_amt, SUM(balance_amount) as bal_amt
+        FROM employee_advances
+        WHERE UPPER(status) IN ('ACTIVE', 'APPROVED')
+        GROUP BY emp_id
+    ) eadv ON eadv.emp_id = pe.emp_id
+    WHERE pe.payroll_cycle_id = p_cycle_id
+    ORDER BY pe.emp_id ASC;
+END
+
+====================================================
+PROCEDURE: sp_finalize_payroll_run
+====================================================
+CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_finalize_payroll_run`(
+    IN p_run_id BIGINT,
+    IN p_admin_emp_id VARCHAR(20),
+    OUT p_status VARCHAR(10),
+    OUT p_message VARCHAR(255)
+)
+BEGIN
+    DECLARE v_status VARCHAR(20);
+    DECLARE v_error_count INT;
+    DECLARE v_gen_count INT DEFAULT 0;
+    DECLARE v_gen_status VARCHAR(10);
+    DECLARE v_gen_msg VARCHAR(255);
+
+    -- Lock payroll run row for update
+    SELECT payroll_status INTO v_status
+    FROM payroll_run
+    WHERE payroll_run_id = p_run_id
+    FOR UPDATE;
+
+    IF v_status IS NULL THEN
+        SET p_status = 'ERROR';
+        SET p_message = 'Payroll run not found';
+    ELSEIF v_status = 'FINALIZED' THEN
+        SET p_status = 'ERROR';
+        SET p_message = 'Payroll run is already finalized';
+    ELSEIF v_status NOT IN ('APPROVED', 'CALCULATED') THEN
+        SET p_status = 'ERROR';
+        SET p_message = CONCAT('Run must be CALCULATED or APPROVED before finalization. Current: ', v_status);
+    ELSE
+        SELECT COUNT(*) INTO v_error_count
+        FROM payroll_employee
+        WHERE payroll_run_id = p_run_id AND calculation_status = 'ERROR';
+
+        IF v_error_count > 0 THEN
+            SET p_status = 'ERROR';
+            SET p_message = CONCAT('Cannot finalize: ', v_error_count, ' employees have calculation errors');
+        ELSE
+            UPDATE payroll_run
+            SET payroll_status = 'FINALIZED',
+                finalized_by = p_admin_emp_id,
+                finalized_at = NOW()
+            WHERE payroll_run_id = p_run_id;
+
+            -- Auto-generate payslips for finalized run
+            CALL sp_generate_payslips(p_run_id, p_admin_emp_id, v_gen_count, v_gen_status, v_gen_msg);
+
+            SET p_status = 'SUCCESS';
+            SET p_message = CONCAT('Payroll finalized and ', v_gen_count, ' payslips generated successfully');
+        END IF;
+    END IF;
+END
+
+====================================================
+PROCEDURE: sp_generate_payroll_attendance
+====================================================
+CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_generate_payroll_attendance`(
+    IN p_month INT,
+    IN p_year INT,
+    IN p_admin_emp_id VARCHAR(20),
+    OUT p_status CHAR(1),
+    OUT p_message VARCHAR(500)
+)
+main_block: BEGIN
+    DECLARE done INT DEFAULT FALSE;
+    DECLARE v_emp_id VARCHAR(20);
+    DECLARE v_is_finalized VARCHAR(1) DEFAULT NULL;
+    
+    DECLARE v_start_date DATE;
+    DECLARE v_end_date DATE;
+    DECLARE v_start_day INT DEFAULT 25;
+    DECLARE v_end_day INT DEFAULT 24;
+    
+    DECLARE v_total_days DECIMAL(5,2) DEFAULT 0;
+    DECLARE v_working_days DECIMAL(5,2) DEFAULT 0;
+    
+    DECLARE v_present DECIMAL(5,2) DEFAULT 0;
+    DECLARE v_wfh DECIMAL(5,2) DEFAULT 0;
+    DECLARE v_leave DECIMAL(5,2) DEFAULT 0;
+    DECLARE v_holiday DECIMAL(5,2) DEFAULT 0;
+    DECLARE v_weekoff DECIMAL(5,2) DEFAULT 0;
+    DECLARE v_absent DECIMAL(5,2) DEFAULT 0;
+    
+    DECLARE v_late INT DEFAULT 0;
+    DECLARE v_half_days DECIMAL(5,2) DEFAULT 0;
+    DECLARE v_overtime DECIMAL(6,2) DEFAULT 0;
+    
+    DECLARE v_paid DECIMAL(5,2) DEFAULT 0;
+    DECLARE v_unpaid DECIMAL(5,2) DEFAULT 0;
+
+    DECLARE emp_cursor CURSOR FOR 
+        SELECT emp_id FROM user_login_details WHERE UPPER(status) = 'ACTIVE';
+        
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+    
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1
+            @sq_errno = MYSQL_ERRNO,
+            @sq_msg   = MESSAGE_TEXT;
+        ROLLBACK;
+        SET p_status  = 'N';
+        SET p_message = CONCAT('DB Error [', IFNULL(@sq_errno,'?'), ']: ', IFNULL(@sq_msg, 'Unknown'));
+    END;
+
+    IF p_admin_emp_id IS NULL OR p_admin_emp_id = '' THEN
+        SET p_status = 'N';
+        SET p_message = 'Admin Employee ID is required to run this process.';
+        LEAVE main_block;
+    END IF;
+
+    SET v_is_finalized = (
+        SELECT is_finalized 
+        FROM payroll_attendance_summary 
+        WHERE payroll_month = p_month AND payroll_year = p_year 
+        LIMIT 1
+    );
+
+    IF v_is_finalized = 'Y' THEN
+        SET p_status = 'N';
+        SET p_message = 'Attendance is already finalized for this month and cannot be regenerated.';
+        LEAVE main_block;
+    END IF;
+
+    SELECT IFNULL(payroll_cycle_start_day, 25), IFNULL(payroll_cycle_end_day, 24)
+    INTO v_start_day, v_end_day
+    FROM company_settings LIMIT 1;
+
+    IF p_month = 1 THEN
+        SET v_start_date = CONCAT(p_year - 1, '-12-', LPAD(v_start_day, 2, '0'));
+    ELSE
+        SET v_start_date = CONCAT(p_year, '-', LPAD(p_month - 1, 2, '0'), '-', LPAD(v_start_day, 2, '0'));
+    END IF;
+    SET v_end_date = CONCAT(p_year, '-', LPAD(p_month, 2, '0'), '-', LPAD(v_end_day, 2, '0'));
+
+    SET v_total_days = DATEDIFF(v_end_date, v_start_date) + 1;
+
+    START TRANSACTION;
+    
+    SET done = FALSE;
+    OPEN emp_cursor;
+    
+    read_loop: LOOP
+        FETCH emp_cursor INTO v_emp_id;
+        IF done THEN
+            LEAVE read_loop;
+        END IF;
+
+        SET v_present = 0;
+        SET v_wfh = 0;
+        SET v_leave = 0;
+        SET v_holiday = 0;
+        SET v_weekoff = 0;
+        SET v_absent = 0;
+        SET v_late = 0;
+        SET v_half_days = 0;
+        SET v_overtime = 0;
+
+        SELECT 
+            SUM(CASE WHEN UPPER(TRIM(status)) = 'PRESENT' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN UPPER(TRIM(status)) = 'WFH' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN UPPER(TRIM(status)) IN ('LEAVE', 'PL', 'SL', 'CL', 'ML') THEN 1 ELSE 0 END),
+            SUM(CASE WHEN UPPER(TRIM(status)) = 'HOLIDAY' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN UPPER(TRIM(status)) IN ('ABSENT', 'A', 'LOP') THEN 1 ELSE 0 END),
+            SUM(CASE WHEN UPPER(TRIM(status)) = 'LATE' THEN 1 ELSE 0 END)
+        INTO 
+            v_present, v_wfh, v_leave, v_holiday, v_absent, v_late
+        FROM attendance
+        WHERE emp_id = v_emp_id 
+          AND attendance_date BETWEEN v_start_date AND v_end_date;
+
+        SET v_present = IFNULL(v_present, 0);
+        SET v_wfh     = IFNULL(v_wfh, 0);
+        SET v_leave   = IFNULL(v_leave, 0);
+        SET v_holiday = IFNULL(v_holiday, 0);
+        SET v_absent  = IFNULL(v_absent, 0);
+        SET v_late    = IFNULL(v_late, 0);
+
+        SET v_working_days = v_total_days - v_holiday;
+        IF v_working_days < 0 THEN SET v_working_days = 0; END IF;
+        
+        SET v_paid = v_present + v_wfh + v_leave + v_holiday;
+        SET v_unpaid = v_absent;
+
+        INSERT INTO payroll_attendance_summary (
+            emp_id, payroll_month, payroll_year, 
+            total_days, working_days, 
+            present_days, wfh_days, leave_days, holiday_days, weekly_off_days, absent_days,
+            paid_days, unpaid_days,
+            late_count, half_days, overtime_hours
+        ) VALUES (
+            v_emp_id, p_month, p_year,
+            v_total_days, v_working_days,
+            v_present, v_wfh, v_leave, v_holiday, 0, v_absent,
+            v_paid, v_unpaid,
+            v_late, v_half_days, v_overtime
+        )
+        ON DUPLICATE KEY UPDATE 
+            total_days = v_total_days,
+            working_days = v_working_days,
+            present_days = v_present,
+            wfh_days = v_wfh,
+            leave_days = v_leave,
+            holiday_days = v_holiday,
+            weekly_off_days = 0,
+            absent_days = v_absent,
+            paid_days = v_paid,
+            unpaid_days = v_unpaid,
+            late_count = v_late,
+            half_days = v_half_days,
+            overtime_hours = v_overtime;
+
+    END LOOP;
+    
+    CLOSE emp_cursor;
+    
+    COMMIT;
+    
+    SET p_status = 'Y';
+    SET p_message = CONCAT('Payroll attendance generated successfully for period ', DATE_FORMAT(v_start_date, '%d-%b'), ' to ', DATE_FORMAT(v_end_date, '%d-%b'));
+
+END
+
+====================================================
+PROCEDURE: finalize_payroll_attendance_proc
+====================================================
+CREATE DEFINER=`root`@`localhost` PROCEDURE `finalize_payroll_attendance_proc`(
+    IN p_emp_id VARCHAR(20),
+    IN p_month INT,
+    IN p_year INT
+)
+BEGIN
+    DECLARE v_user_category VARCHAR(20);
+    
+    SELECT UPPER(user_category) INTO v_user_category 
+    FROM user_login_details 
+    WHERE emp_id = p_emp_id LIMIT 1;
+    
+    IF v_user_category IN ('ADMIN', 'HR', 'SUPERADMIN') THEN
+        UPDATE payroll_attendance_summary 
+        SET is_finalized = 'Y' 
+        WHERE payroll_month = p_month AND payroll_year = p_year;
+    END IF;
+END
+

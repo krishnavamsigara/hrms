@@ -1494,6 +1494,220 @@ class PayrollModel extends Model
         return $builder->get()->getResultArray();
     }
 
+    /**
+     * Fetch run employees with mapped statutory components and banking details
+     */
+    public function get_run_employees_with_components(int $runId, string $search = '', string $status = ''): array
+    {
+        $builder = $this->db->table('payroll_employee pe')
+            ->select('pe.*, u.emp_name, u.email, u.mobile, u.bank_account_no, u.bank_name, u.ifsc, d.department_name, des.designation_name')
+            ->join('user_details u', 'pe.emp_id = u.emp_id', 'left')
+            ->join('department_master d', 'u.department = d.department_id', 'left')
+            ->join('designation_master des', 'u.designation = des.designation_id', 'left')
+            ->where('pe.payroll_run_id', $runId);
+
+        if (!empty($search)) {
+            $builder->groupStart()
+                ->like('pe.emp_id', $search)
+                ->orLike('u.emp_name', $search)
+                ->orLike('u.bank_account_no', $search)
+                ->orLike('u.ifsc', $search)
+                ->groupEnd();
+        }
+
+        if (!empty($status)) {
+            $builder->where('pe.calculation_status', $status);
+        }
+
+        $builder->orderBy('pe.emp_id', 'ASC');
+        $employees = $builder->get()->getResultArray();
+
+        if (empty($employees)) {
+            return [];
+        }
+
+        // Fetch all component snapshots for this run in a single efficient query
+        $compRows = $this->db->table('payroll_employee_component pec')
+            ->select('pec.*')
+            ->join('payroll_employee pe', 'pec.payroll_employee_id = pe.payroll_employee_id')
+            ->where('pe.payroll_run_id', $runId)
+            ->get()->getResultArray();
+
+        $compMap = [];
+        foreach ($compRows as $c) {
+            $compMap[$c['payroll_employee_id']][$c['component_code']] = $c;
+        }
+
+        // Fetch advances ledger if active
+        $advRows = $this->db->table('employee_advances')
+            ->select('emp_id, SUM(advance_amount) as adv_amt, SUM(balance_amount) as bal_amt')
+            ->whereIn('UPPER(status)', ['ACTIVE', 'APPROVED'])
+            ->groupBy('emp_id')
+            ->get()->getResultArray();
+        $advMap = [];
+        foreach ($advRows as $a) {
+            $advMap[$a['emp_id']] = $a;
+        }
+
+        $result = [];
+        foreach ($employees as $e) {
+            $peId = (int)$e['payroll_employee_id'];
+            $empComps = $compMap[$peId] ?? [];
+
+            $basic     = (float)($empComps['BASIC']['payable_amount'] ?? 0);
+            $hra       = (float)($empComps['HRA']['payable_amount'] ?? 0);
+            $med       = (float)($empComps['MEDICAL']['payable_amount'] ?? 0);
+            $conv      = (float)($empComps['CONVEYANCE']['payable_amount'] ?? 0);
+            $others    = (float)($empComps['SPECIAL_ALLOWANCE']['payable_amount'] ?? 0);
+            $nps       = (float)($empComps['NPS']['payable_amount'] ?? 0);
+            $pfEmplr   = (float)($empComps['PF_EMPLOYER']['payable_amount'] ?? 0);
+            $adminChg  = isset($empComps['ADMIN_CHARGES']) ? (float)$empComps['ADMIN_CHARGES']['payable_amount'] : 75.00;
+            $esiEmplr  = (float)($empComps['ESI_EMPLOYER']['payable_amount'] ?? 0);
+            $pt        = (float)($empComps['PROF_TAX']['payable_amount'] ?? 200.00);
+            $pfEmp     = (float)($empComps['PF_EMPLOYEE']['payable_amount'] ?? 0);
+            $esiEmp    = (float)($empComps['ESI_EMPLOYEE']['payable_amount'] ?? 0);
+            $advDeduct = (float)($empComps['ADVANCES']['payable_amount'] ?? 0);
+            $tds       = (float)($empComps['TDS']['payable_amount'] ?? 0);
+
+            // Compute other earnings from non-standard components
+            $dynamicEarnings = 0.00;
+            foreach ($empComps as $code => $c) {
+                if ($c['component_type'] === 'EARNING' && !in_array($code, ['BASIC', 'HRA', 'MEDICAL', 'CONVEYANCE', 'SPECIAL_ALLOWANCE'])) {
+                    $dynamicEarnings += (float)$c['payable_amount'];
+                }
+            }
+
+            $e['basic']                     = $basic;
+            $e['hra']                       = $hra;
+            $e['medical']                   = $med;
+            $e['conveyance']                = $conv;
+            $e['others']                    = $others;
+            $e['employer_nps']              = $nps;
+            $e['pf_employer_contribution']  = $pfEmplr;
+            $e['admin_charges']             = $adminChg;
+            $e['esi_employer_contribution'] = $esiEmplr;
+            $e['pt']                        = $pt;
+            $e['pf_employee_contribution']  = $pfEmp;
+            $e['esi_employee_contribution'] = $esiEmp;
+            $e['advances_deduction']        = $advDeduct;
+            $e['tds']                       = $tds;
+            $e['other_earnings']            = $dynamicEarnings;
+            $e['ctc1']                      = (float)$e['monthly_ctc'];
+            $e['salary']                    = (float)$e['monthly_ctc'];
+            $e['leaves']                    = (float)$e['lop_days'];
+            $e['leave_deduction']           = (float)$e['lop_deduction'];
+            $e['total_deductions']          = (float)$e['other_deductions'];
+            $e['net_pay']                   = (float)$e['net_salary'];
+            $e['advance_amount']            = (float)($advMap[$e['emp_id']]['adv_amt'] ?? 0);
+            $e['bal_advance']               = (float)($advMap[$e['emp_id']]['bal_amt'] ?? 0);
+            $e['components_list']           = array_values($empComps);
+
+            $result[] = $e;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Synchronize legacy payroll_cycles & payroll_employees tables
+     */
+    public function sync_legacy_payroll_cycle(int $runId): void
+    {
+        try {
+            $run = $this->get_run_by_id($runId);
+            if (!$run) return;
+
+            $month = (int)$run['payroll_month'];
+            $year  = (int)$run['payroll_year'];
+            $pStart = $run['period_start'];
+            $pEnd   = $run['period_end'];
+            $monthNameShort = strtoupper(date('M', mktime(0, 0, 0, $month, 10, $year)));
+            $payrollCode = "{$monthNameShort}-{$year} (" . date('d M', strtotime($pStart)) . " - " . date('d M', strtotime($pEnd)) . ")";
+            $payDate = date('Y-m-t', strtotime($pEnd));
+
+            $agg = $this->db->table('payroll_employee')
+                ->select('COUNT(*) as total_emp, SUM(gross_earnings) as total_gross, SUM(other_deductions) as total_ded, SUM(net_salary) as total_net')
+                ->where('payroll_run_id', $runId)
+                ->get()->getRowArray();
+
+            $totalEmp   = (int)($agg['total_emp'] ?? 0);
+            $totalGross = (float)($agg['total_gross'] ?? 0);
+            $totalDed   = (float)($agg['total_ded'] ?? 0);
+            $totalNet   = (float)($agg['total_net'] ?? 0);
+            $legacyStatus = ($run['payroll_status'] === 'FINALIZED') ? 'LOCKED' : (($run['payroll_status'] === 'APPROVED') ? 'APPROVED' : 'DRAFT');
+
+            $existCycle = $this->db->table('payroll_cycles')
+                ->where('period_start', $pStart)
+                ->where('period_end', $pEnd)
+                ->get()->getRowArray();
+
+            $cycleData = [
+                'payroll_code'     => $payrollCode,
+                'period_start'     => $pStart,
+                'period_end'       => $pEnd,
+                'pay_date'         => $payDate,
+                'status'           => $legacyStatus,
+                'total_employees'  => $totalEmp,
+                'total_gross'      => $totalGross,
+                'total_deductions' => $totalDed,
+                'total_net'        => $totalNet,
+                'updated_at'       => date('Y-m-d H:i:s'),
+            ];
+
+            if ($existCycle) {
+                $cycleId = (int)$existCycle['id'];
+                $this->db->table('payroll_cycles')->where('id', $cycleId)->update($cycleData);
+            } else {
+                $cycleData['created_by'] = $run['created_by'] ?: 'ADMIN';
+                $cycleData['created_at'] = date('Y-m-d H:i:s');
+                $this->db->table('payroll_cycles')->insert($cycleData);
+                $cycleId = (int)$this->db->insertID();
+            }
+
+            $employees = $this->get_run_employees_with_components($runId);
+            foreach ($employees as $e) {
+                $existPe = $this->db->table('payroll_employees')
+                    ->where('payroll_cycle_id', $cycleId)
+                    ->where('emp_id', $e['emp_id'])
+                    ->get()->getRowArray();
+
+                $peData = [
+                    'payroll_cycle_id'    => $cycleId,
+                    'emp_id'              => $e['emp_id'],
+                    'employee_name'       => $e['emp_name'],
+                    'working_days'        => 30,
+                    'present_days'        => (float)($e['paid_days'] ?? 30),
+                    'absent_days'         => (float)($e['lop_days'] ?? 0),
+                    'paid_leave_days'     => 0,
+                    'holiday_days'        => 0,
+                    'weekly_off_days'     => 0,
+                    'lop_days'            => (float)($e['lop_days'] ?? 0),
+                    'salary_basis'        => (float)$e['monthly_ctc'],
+                    'ctc1'                => (float)$e['monthly_ctc'],
+                    'leave_deduction'     => (float)$e['lop_deduction'],
+                    'other_earnings'      => (float)$e['other_earnings'],
+                    'esi_flag'            => ((float)$e['gross_earnings'] <= 21000) ? 'YES' : 'NO',
+                    'gross_salary'        => (float)$e['gross_earnings'],
+                    'total_earnings'      => (float)$e['gross_earnings'],
+                    'total_deductions'    => (float)$e['other_deductions'],
+                    'net_salary'          => (float)$e['net_salary'],
+                    'calculation_version' => 1,
+                    'status'              => $e['calculation_status'],
+                    'updated_at'          => date('Y-m-d H:i:s'),
+                ];
+
+                if ($existPe) {
+                    $this->db->table('payroll_employees')->where('id', $existPe['id'])->update($peData);
+                } else {
+                    $peData['created_at'] = date('Y-m-d H:i:s');
+                    $this->db->table('payroll_employees')->insert($peData);
+                }
+            }
+        } catch (\Throwable $th) {
+            log_message('error', 'sync_legacy_payroll_cycle error: ' . $th->getMessage());
+        }
+    }
+
     public function get_employee_run_components(int $payrollEmployeeId): array
     {
         return $this->db->table('payroll_employee_component')
@@ -1512,27 +1726,137 @@ class PayrollModel extends Model
             ->get()->getResultArray();
     }
 
-    public function save_salary_component_master(array $data): bool
+    public function save_salary_component_master(array $data): int
     {
         $builder = $this->db->table('salary_component_master');
         if (!empty($data['component_id'])) {
             $id = (int)$data['component_id'];
             unset($data['component_id']);
-            return $builder->where('component_id', $id)->update($data);
+            $builder->where('component_id', $id)->update($data);
+            return $id;
         } else {
-            return $builder->insert($data);
+            $builder->insert($data);
+            return (int)$this->db->insertID();
         }
     }
 
     public function toggle_salary_component_master(int $id): bool
     {
         $sql = "UPDATE salary_component_master SET is_active = IF(is_active = 1, 0, 1) WHERE component_id = ?";
-        return (bool)$this->db->query($sql, [$id]);
+        $res = (bool)$this->db->query($sql, [$id]);
+        
+        // Also sync active status to employee structures
+        $comp = $this->db->table('salary_component_master')->where('component_id', $id)->get()->getRowArray();
+        if ($comp) {
+            $this->db->table('employee_salary_component')
+                ->where('component_id', $id)
+                ->update(['is_active' => (int)$comp['is_active']]);
+        }
+        $this->recalculate_open_runs();
+        return $res;
     }
 
     public function delete_salary_component_master(int $id): bool
     {
-        return (bool)$this->db->table('salary_component_master')->where('component_id', $id)->delete();
+        // Remove from employee structures
+        $this->db->table('employee_salary_component')->where('component_id', $id)->delete();
+        $res = (bool)$this->db->table('salary_component_master')->where('component_id', $id)->delete();
+        $this->recalculate_open_runs();
+        return $res;
+    }
+
+    /**
+     * Add a newly created component to all active employees' salary structures in active state
+     */
+    public function add_component_to_all_active_employees(int $componentId, float $defaultAmt = 0.0): int
+    {
+        // 1. Stored procedure call
+        try {
+            $this->db->query("CALL sp_add_component_to_all_employees(?)", [$componentId]);
+        } catch (\Throwable $e) {
+            log_message('error', 'sp_add_component_to_all_employees error: ' . $e->getMessage());
+        }
+
+        // 2. PHP fallback & guarantee loop across all active employees
+        $comp = $this->db->table('salary_component_master')
+            ->where('component_id', $componentId)
+            ->get()->getRowArray();
+        if (!$comp) return 0;
+
+        $structures = $this->get_all_employee_structures();
+        $count = 0;
+
+        foreach ($structures as $s) {
+            $structId = (int)($s['salary_structure_id'] ?? 0);
+            $monthlyCtc = (float)($s['monthly_ctc'] ?? 0);
+            if ($structId <= 0) continue;
+
+            $amt = $defaultAmt;
+            $pct = isset($comp['percentage_value']) && $comp['percentage_value'] !== null ? (float)$comp['percentage_value'] : null;
+
+            if ($comp['calculation_type'] === 'PERCENTAGE' && $pct !== null && $pct > 0) {
+                if (($comp['percentage_base'] ?? '') === 'BASIC') {
+                    $basicRow = $this->db->table('employee_salary_component esc')
+                        ->join('salary_component_master m', 'esc.component_id = m.component_id')
+                        ->where('esc.salary_structure_id', $structId)
+                        ->where('m.component_code', 'BASIC')
+                        ->get()->getRowArray();
+                    $basicAmt = (float)($basicRow['monthly_amount'] ?? 0);
+                    $amt = round(($basicAmt * $pct) / 100, 2);
+                } else {
+                    $amt = round(($monthlyCtc * $pct) / 100, 2);
+                }
+            }
+
+            $existing = $this->db->table('employee_salary_component')
+                ->where('salary_structure_id', $structId)
+                ->where('component_id', $componentId)
+                ->get()->getRowArray();
+
+            if ($existing) {
+                $this->db->table('employee_salary_component')
+                    ->where('salary_component_id', $existing['salary_component_id'])
+                    ->update([
+                        'is_active'        => 1,
+                        'percentage_value' => $pct,
+                        'monthly_amount'   => ($existing['monthly_amount'] > 0) ? $existing['monthly_amount'] : $amt,
+                    ]);
+            } else {
+                $this->db->table('employee_salary_component')->insert([
+                    'salary_structure_id' => $structId,
+                    'component_id'        => $componentId,
+                    'monthly_amount'      => $amt,
+                    'percentage_value'    => $pct,
+                    'is_active'           => 1,
+                    'created_at'          => date('Y-m-d H:i:s'),
+                ]);
+            }
+            $count++;
+        }
+
+        // Recalculate any open payroll runs
+        $this->recalculate_open_runs();
+
+        return $count;
+    }
+
+    /**
+     * Recalculate any open/unfinalized payroll runs so updated salary structures and components reflect immediately
+     */
+    public function recalculate_open_runs(?string $empId = null): void
+    {
+        $openRuns = $this->db->table('payroll_run')
+            ->whereIn('payroll_status', ['DRAFT', 'CALCULATED', 'APPROVED'])
+            ->get()->getResultArray();
+
+        foreach ($openRuns as $run) {
+            $runId = (int)$run['payroll_run_id'];
+            if ($empId) {
+                $this->sp_calculate_employee_payroll($runId, $empId, 'ADMIN');
+            } else {
+                $this->sp_calculate_monthly_payroll($runId, 'ADMIN');
+            }
+        }
     }
 
     // Salary structures
@@ -1551,12 +1875,19 @@ class PayrollModel extends Model
                     ess.effective_from,
                     ess.effective_to,
                     ess.monthly_ctc,
-                    ess.payroll_status
+                    ess.payroll_status,
+                    (SELECT COUNT(*) FROM employee_salary_component esc WHERE esc.salary_structure_id = ess.salary_structure_id AND esc.is_active = 1) AS active_component_count,
+                    (SELECT COUNT(*) FROM employee_salary_component esc WHERE esc.salary_structure_id = ess.salary_structure_id) AS total_component_count
                 FROM user_details u
                 LEFT JOIN department_master d ON u.department = d.department_id
                 LEFT JOIN designation_master des ON u.designation = des.designation_id
-                LEFT JOIN employee_salary_structure ess ON u.emp_id = ess.emp_id 
-                    AND ess.payroll_status = 'APPROVED'
+                LEFT JOIN employee_salary_structure ess ON ess.salary_structure_id = (
+                    SELECT ess2.salary_structure_id 
+                    FROM employee_salary_structure ess2 
+                    WHERE ess2.emp_id = u.emp_id AND ess2.payroll_status = 'APPROVED'
+                    ORDER BY ess2.structure_version DESC, ess2.salary_structure_id DESC 
+                    LIMIT 1
+                )
                 WHERE LOWER(u.profisional_details_status) = 'active'
                 ORDER BY u.emp_id ASC";
         return $this->db->query($sql)->getResultArray();
@@ -1598,9 +1929,11 @@ class PayrollModel extends Model
         $components = [];
         if (!empty($struct['salary_structure_id'])) {
             $components = $this->db->table('employee_salary_component esc')
-                ->select('esc.*, m.component_code, m.component_name, m.component_type, m.calculation_type, m.is_lop_applicable')
+                ->select('esc.*, m.component_code, m.component_name, m.component_type, m.calculation_type, m.percentage_base, m.is_lop_applicable, m.is_taxable')
                 ->join('salary_component_master m', 'esc.component_id = m.component_id')
                 ->where('esc.salary_structure_id', $struct['salary_structure_id'])
+                ->orderBy('m.component_type', 'ASC')
+                ->orderBy('m.component_id', 'ASC')
                 ->get()->getResultArray();
         }
 
@@ -1618,6 +1951,7 @@ class PayrollModel extends Model
             ->get()->getRow()->v ?? 0);
         $nextVersion = $lastVersion + 1;
 
+        // Mark previous structure versions with end date
         $this->db->table('employee_salary_structure')
             ->where('emp_id', $empId)
             ->update([
@@ -1625,6 +1959,7 @@ class PayrollModel extends Model
                 'payroll_status' => 'INACTIVE',
             ]);
 
+        // Insert new approved version with exact updated Monthly CTC (e.g. 30k)
         $this->db->table('employee_salary_structure')->insert([
             'emp_id'            => $empId,
             'structure_version' => $nextVersion,
@@ -1635,25 +1970,128 @@ class PayrollModel extends Model
             'approved_by'       => $adminId,
             'approved_at'       => date('Y-m-d H:i:s'),
             'created_at'        => date('Y-m-d H:i:s'),
+            'updated_at'        => date('Y-m-d H:i:s'),
         ]);
 
         $newStructId = $this->db->insertID();
 
-        foreach ($components as $compId => $compData) {
-            $amt = (float)($compData['monthly_amount'] ?? 0);
-            $pct = isset($compData['percentage_value']) && $compData['percentage_value'] !== '' ? (float)$compData['percentage_value'] : null;
+        $masterComps = $this->get_salary_component_master();
+        foreach ($masterComps as $m) {
+            $compId = (int)$m['component_id'];
+            $compData = $components[$compId] ?? null;
+
+            if ($compData !== null) {
+                $amt = (float)($compData['monthly_amount'] ?? 0);
+                $pct = (isset($compData['percentage_value']) && $compData['percentage_value'] !== '') ? (float)$compData['percentage_value'] : null;
+                $isActive = !empty($compData['is_active']) ? 1 : 0;
+            } else {
+                $amt = (float)($m['default_monthly_amount'] ?? 0);
+                $pct = isset($m['percentage_value']) ? (float)$m['percentage_value'] : null;
+                $isActive = (int)($m['is_active'] ?? 1);
+            }
 
             $this->db->table('employee_salary_component')->insert([
                 'salary_structure_id' => $newStructId,
-                'component_id'        => (int)$compId,
+                'component_id'        => $compId,
                 'monthly_amount'      => $amt,
                 'percentage_value'    => $pct,
-                'is_active'           => 1,
+                'is_active'           => $isActive,
                 'created_at'          => date('Y-m-d H:i:s'),
             ]);
         }
 
+        // Sync legacy table employee_salary so any legacy references have the updated 30k
+        $this->sync_legacy_employee_salary($empId, $monthlyCtc, $components, $effectiveFrom);
+
+        // Recalculate any open/unfinalized payroll runs for this employee immediately!
+        $this->recalculate_open_runs($empId);
+
         return true;
+    }
+
+    /**
+     * Synchronize legacy employee_salary & emp_salary_structures tables
+     */
+    public function sync_legacy_employee_salary(string $empId, float $monthlyCtc, array $components, string $effectiveFrom): void
+    {
+        try {
+            $basic = 0.00; $hra = 0.00; $conv = 0.00; $med = 0.00; $others = 0.00;
+            $pfEmp = 0.00; $esiEmp = 0.00; $pt = 0.00; $gross = 0.00; $deductions = 0.00;
+            $pfEmplr = 0.00; $esiEmplr = 0.00;
+
+            $masterComps = $this->get_salary_component_master();
+            $masterMap = [];
+            foreach ($masterComps as $m) {
+                $masterMap[$m['component_id']] = $m;
+            }
+
+            foreach ($components as $cid => $cdata) {
+                if (empty($cdata['is_active'])) continue;
+                $amt = (float)($cdata['monthly_amount'] ?? 0);
+                $m = $masterMap[$cid] ?? null;
+                if (!$m) continue;
+
+                $code = $m['component_code'];
+                $type = $m['component_type'];
+
+                if ($type === 'EARNING') {
+                    $gross += $amt;
+                    if ($code === 'BASIC') $basic = $amt;
+                    elseif ($code === 'HRA') $hra = $amt;
+                    elseif ($code === 'CONVEYANCE') $conv = $amt;
+                    elseif ($code === 'MEDICAL') $med = $amt;
+                    else $others += $amt;
+                } elseif ($type === 'DEDUCTION') {
+                    $deductions += $amt;
+                    if (strpos($code, 'PF') !== false) $pfEmp = $amt;
+                    elseif (strpos($code, 'ESI') !== false) $esiEmp = $amt;
+                    elseif (strpos($code, 'TAX') !== false || $code === 'PROF_TAX') $pt = $amt;
+                } elseif ($type === 'EMPLOYER_CONTRIBUTION') {
+                    if (strpos($code, 'PF') !== false) $pfEmplr = $amt;
+                    elseif (strpos($code, 'ESI') !== false) $esiEmplr = $amt;
+                }
+            }
+
+            $net = max(0, $gross - $deductions);
+            $monthName = strtolower(date('F', strtotime($effectiveFrom)));
+            $year = (int)date('Y', strtotime($effectiveFrom));
+
+            // Upsert into employee_salary
+            $exist = $this->db->table('employee_salary')
+                ->where('EMP_ID', $empId)
+                ->where('month', $monthName)
+                ->where('year', $year)
+                ->get()->getRowArray();
+
+            $salData = [
+                'EMP_ID'                     => $empId,
+                'salary'                     => $monthlyCtc,
+                'ctc1'                       => $monthlyCtc,
+                'gross'                      => $gross,
+                'basic @ 50%'                => $basic,
+                'hra @ 20%'                  => $hra,
+                'medical @ 5%'               => $med,
+                'conveyance @ 8%'            => $conv,
+                'others @ 17%'               => $others,
+                'pf_employee_contribution'   => $pfEmp,
+                'esi_employee_contribution'  => $esiEmp,
+                'pt'                         => $pt,
+                'pf_employer_contribution'   => $pfEmplr,
+                'esi_employer_contribution'  => $esiEmplr,
+                'total_deductions'           => $deductions,
+                'net_pay'                    => $net,
+                'month'                      => $monthName,
+                'year'                       => $year,
+            ];
+
+            if ($exist) {
+                $this->db->table('employee_salary')->where('id', $exist['id'])->update($salData);
+            } else {
+                $this->db->table('employee_salary')->insert($salData);
+            }
+        } catch (\Throwable $e) {
+            log_message('error', 'sync_legacy_employee_salary error: ' . $e->getMessage());
+        }
     }
 
     // Payslips list

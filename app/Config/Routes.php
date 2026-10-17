@@ -290,6 +290,7 @@ $routes->GET('admin/payroll/payslip/(:num)/(:any)', 'PayrollAdminController::vie
 $routes->GET('admin/payroll/reports', 'PayrollAdminController::reports');
 $routes->GET('admin/payroll/export_bank_csv/(:num)', 'PayrollAdminController::export_bank_csv/$1');
 $routes->GET('admin/payroll/export_register_csv/(:num)', 'PayrollAdminController::export_register_csv/$1');
+$routes->GET('admin/payroll/export_excel/(:num)', 'PayrollAdminController::export_register_csv/$1');
 
 // Compatibility aliases
 $routes->GET('admin/payroll/view/(:num)', 'PayrollAdminController::run_detail/$1');

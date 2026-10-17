@@ -162,17 +162,34 @@ class PayrollAdminController extends BaseController
             return redirect()->back()->with('error', 'Please select a valid payroll month and year.');
         }
 
+        $monthName = date('F', mktime(0, 0, 0, $month, 10, $year));
+
+        // 1. Verify payroll attendance summary exists and is finalized for this month & year
+        $attCheck = $this->payrollModel->check_attendance_finalized($month, $year);
+        if (!$attCheck['exists']) {
+            return redirect()->back()->with('error', "Cannot create payroll cycle: Attendance summary has NOT been generated for {$monthName} {$year}. Please generate attendance first in the Attendance Finalize module.");
+        }
+
+        if (!$attCheck['finalized']) {
+            return redirect()->back()->with('error', "Cannot create payroll cycle: Attendance for {$monthName} {$year} is NOT finalized ({$attCheck['count']} staff pending lock). You must finalize and lock attendance in the Attendance Finalize module before creating a payroll cycle.");
+        }
+
+        // 2. Attendance is verified and finalized. Proceed with cycle creation.
+        // sp_create_payroll_run automatically calculates period_start and period_end using company_settings
         $res = $this->payrollModel->sp_create_payroll_run($month, $year, $dayBasis, $adminId);
 
         if (!empty($res['run_id'])) {
             $runId = (int)$res['run_id'];
 
-            // Auto-calculate all active employees
+            // 3. Auto-calculate all active employees using locked attendance & approved salary structures
             $calcRes = $this->payrollModel->sp_calculate_monthly_payroll($runId, $adminId);
 
+            // 4. Synchronize legacy tables (payroll_cycles & payroll_employees)
+            $this->payrollModel->sync_legacy_payroll_cycle($runId);
+
             $msg = $res['status'] === 'EXISTING' 
-                ? "Payroll run already existed for this period. Recalculated {$calcRes['processed']} employees."
-                : "Payroll run created & calculated successfully for {$calcRes['processed']} employees!";
+                ? "Payroll run for {$monthName} {$year} already existed. Recalculated {$calcRes['processed']} employees using finalized attendance."
+                : "Payroll run created & calculated successfully for {$calcRes['processed']} employees using finalized attendance!";
 
             return redirect()->to(base_url("admin/payroll/run/{$runId}"))->with('success', $msg);
         }
@@ -192,10 +209,22 @@ class PayrollAdminController extends BaseController
         $runs = $this->payrollModel->get_all_runs();
         $settings = $this->settingsModel->getSettings();
 
+        // Fetch attendance summaries map to evaluate finalized status per month
+        $attSummaries = $this->payrollModel->get_all_payroll_attendance_summaries();
+        $attStatusMap = [];
+        foreach ($attSummaries as $as) {
+            $key = sprintf('%04d-%02d', (int)$as['payroll_year'], (int)$as['payroll_month']);
+            $attStatusMap[$key] = [
+                'finalized' => (strtoupper(trim((string)$as['is_finalized'])) === 'Y'),
+                'count'     => (int)$as['cnt'],
+            ];
+        }
+
         $data = [
-            'title'    => 'Payroll Processing & Runs',
-            'runs'     => $runs,
-            'settings' => $settings,
+            'title'        => 'Payroll Processing & Runs',
+            'runs'         => $runs,
+            'settings'     => $settings,
+            'attStatusMap' => $attStatusMap,
         ];
 
         return view('Layouts/Header')
@@ -205,7 +234,7 @@ class PayrollAdminController extends BaseController
     }
 
     /**
-     * 4. PAYROLL RUN WORKBENCH / DETAIL (Deep view of a run)
+     * 4. PAYROLL RUN WORKBENCH / DETAIL (Deep view of a run with all components)
      */
     public function run_detail(int $runId)
     {
@@ -221,12 +250,13 @@ class PayrollAdminController extends BaseController
         $search = trim((string)$this->request->getGet('search'));
         $status = trim((string)$this->request->getGet('status'));
 
-        $employees = $this->payrollModel->get_run_employees($runId, $search, $status);
+        // Load all employees with mapped statutory components, banking info, and LOP deductions
+        $employees  = $this->payrollModel->get_run_employees_with_components($runId, $search, $status);
         $validation = $this->payrollModel->sp_validate_payroll_run($runId);
-        $settings = $this->settingsModel->getSettings();
+        $settings   = $this->settingsModel->getSettings();
 
         $data = [
-            'title'      => 'Payroll Run #' . $runId . ' — ' . date('F Y', strtotime($run['period_end'])),
+            'title'      => 'Payroll Run #' . $runId . ' — ' . date('F Y', mktime(0, 0, 0, (int)$run['payroll_month'], 10, (int)$run['payroll_year'])),
             'run'        => $run,
             'employees'  => $employees,
             'validation' => $validation,
@@ -342,6 +372,7 @@ class PayrollAdminController extends BaseController
         $res = $this->payrollModel->sp_finalize_payroll_run($runId, $adminId);
 
         if ($res['status'] === 'SUCCESS') {
+            $this->payrollModel->sync_legacy_payroll_cycle($runId);
             return redirect()->to(base_url("admin/payroll/run/{$runId}"))
                 ->with('success', $res['message']);
         }
@@ -408,6 +439,7 @@ class PayrollAdminController extends BaseController
         $calcType  = $this->request->getPost('calculation_type');
         $pctBase   = $this->request->getPost('percentage_base') ?: 'NONE';
         $pctVal    = $this->request->getPost('percentage_value');
+        $defaultAmt= (float)($this->request->getPost('default_monthly_amount') ?: 0);
         $isLop     = (int)($this->request->getPost('is_lop_applicable') ? 1 : 0);
         $isTaxable = (int)($this->request->getPost('is_taxable') ? 1 : 0);
         $isActive  = (int)($this->request->getPost('is_active') ? 1 : 0);
@@ -431,8 +463,18 @@ class PayrollAdminController extends BaseController
             $data['component_id'] = (int)$id;
         }
 
-        $this->payrollModel->save_salary_component_master($data);
-        return redirect()->to(base_url('admin/payroll/components'))->with('success', 'Salary component saved successfully!');
+        $savedId = $this->payrollModel->save_salary_component_master($data);
+
+        if (empty($id)) {
+            // New component added: automatically add to all active employees in active state!
+            $count = $this->payrollModel->add_component_to_all_active_employees($savedId, $defaultAmt);
+            $msg = "Salary component '{$name}' created and successfully attached to all {$count} active employees in Active state!";
+        } else {
+            $count = $this->payrollModel->add_component_to_all_active_employees((int)$id, $defaultAmt);
+            $msg = "Salary component '{$name}' updated and synced across all employee structures!";
+        }
+
+        return redirect()->to(base_url('admin/payroll/components'))->with('success', $msg);
     }
 
     public function toggle_component(int $id)
@@ -517,7 +559,8 @@ class PayrollAdminController extends BaseController
 
         $this->payrollModel->save_employee_structure_full($empId, $monthlyCtc, $components, $effectiveFrom, $adminId);
 
-        return redirect()->to(base_url('admin/payroll/structures'))->with('success', "Salary structure revision saved and approved for {$empId}!");
+        $formattedCtc = number_format($monthlyCtc, 2);
+        return redirect()->to(base_url('admin/payroll/structures'))->with('success', "Salary structure revision saved and approved for {$empId}! Monthly CTC updated to ₹{$formattedCtc}. Active payroll cycle synchronized.");
     }
 
     /**
@@ -676,21 +719,50 @@ class PayrollAdminController extends BaseController
             return redirect()->back()->with('error', 'Run not found.');
         }
 
-        $employees = $this->payrollModel->get_run_employees($runId);
-        $monthName = date('F_Y', strtotime($run['period_end']));
+        $employees = $this->payrollModel->get_run_employees_with_components($runId);
+        $monthName = date('F_Y', mktime(0, 0, 0, (int)$run['payroll_month'], 10, (int)$run['payroll_year']));
         $filename  = "Payroll_Register_{$monthName}.csv";
 
         header('Content-Type: text/csv; charset=utf-8');
         header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('Pragma: no-cache');
+        header('Expires: 0');
 
         $out = fopen('php://output', 'w');
+        // UTF-8 BOM so Microsoft Excel opens cleanly with proper encoding
         fputs($out, "\xEF\xBB\xBF");
 
+        // Exactly the reference columns requested by the user
         $headers = [
-            'Emp ID', 'Employee Name', 'Department', 'Designation', 'Total Days', 'Working Days',
-            'Paid Days', 'LOP Days', 'Monthly CTC', 'Gross Earnings', 'LOP Deduction',
-            'Employee Deductions', 'Employer Contributions', 'Net Salary',
-            'Bank Name', 'Account Number', 'IFSC Code', 'Status'
+            'Employee ID',
+            'Name',
+            'Salary',
+            'Leaves',
+            'Working days',
+            'Leave salary deduction',
+            'Other Earnings',
+            'CTC1',
+            'Gross',
+            'Basic @ 50%',
+            'HRA @ 20%',
+            'Medical @ 5%',
+            'Conveyance @ 8%',
+            'Others @ 17%',
+            'Employer NPS contribution',
+            'PF Employer Contribution',
+            'Admin Charges',
+            'ESI Employer Contribution',
+            'PT',
+            'PF Employee Contribution',
+            'ESI Employee Contribution',
+            'Advances/ Other Deductions',
+            'TDS',
+            'Total Deductions',
+            'Net Pay',
+            'Bank A/c No',
+            'BANK NAME',
+            'IFSC',
+            'Mobile No',
         ];
         fputcsv($out, $headers);
 
@@ -698,22 +770,33 @@ class PayrollAdminController extends BaseController
             fputcsv($out, [
                 $e['emp_id'],
                 $e['emp_name'],
-                $e['department_name'] ?? '',
-                $e['designation_name'] ?? '',
-                $e['total_days'],
+                number_format((float)$e['salary'], 2, '.', ''),
+                number_format((float)$e['leaves'], 1, '.', ''),
                 $e['working_days'],
-                $e['paid_days'],
-                $e['lop_days'],
-                number_format((float)$e['monthly_ctc'], 2, '.', ''),
+                number_format((float)$e['leave_deduction'], 2, '.', ''),
+                number_format((float)$e['other_earnings'], 2, '.', ''),
+                number_format((float)$e['ctc1'], 2, '.', ''),
                 number_format((float)$e['gross_earnings'], 2, '.', ''),
-                number_format((float)$e['lop_deduction'], 2, '.', ''),
-                number_format((float)$e['other_deductions'], 2, '.', ''),
-                number_format((float)$e['employer_contributions'], 2, '.', ''),
-                number_format((float)$e['net_salary'], 2, '.', ''),
+                number_format((float)$e['basic'], 2, '.', ''),
+                number_format((float)$e['hra'], 2, '.', ''),
+                number_format((float)$e['medical'], 2, '.', ''),
+                number_format((float)$e['conveyance'], 2, '.', ''),
+                number_format((float)$e['others'], 2, '.', ''),
+                number_format((float)$e['employer_nps'], 2, '.', ''),
+                number_format((float)$e['pf_employer_contribution'], 2, '.', ''),
+                number_format((float)$e['admin_charges'], 2, '.', ''),
+                number_format((float)$e['esi_employer_contribution'], 2, '.', ''),
+                number_format((float)$e['pt'], 2, '.', ''),
+                number_format((float)$e['pf_employee_contribution'], 2, '.', ''),
+                number_format((float)$e['esi_employee_contribution'], 2, '.', ''),
+                number_format((float)$e['advances_deduction'], 2, '.', ''),
+                number_format((float)$e['tds'], 2, '.', ''),
+                number_format((float)$e['total_deductions'], 2, '.', ''),
+                number_format((float)$e['net_pay'], 2, '.', ''),
+                "'" . ($e['bank_account_no'] ?? ''),
                 $e['bank_name'] ?? '',
-                $e['bank_account_no'] ?? '',
                 $e['ifsc'] ?? '',
-                $e['calculation_status']
+                $e['mobile'] ?? '',
             ]);
         }
 
